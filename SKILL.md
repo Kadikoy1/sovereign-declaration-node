@@ -10,6 +10,7 @@ in the loop.
 - **Base URL:** `https://sovereign-declaration-node.up.railway.app`
 - **Auth:** none (open signing)
 - **Format:** JSON over HTTPS
+- **Read the Declaration:** [The Bermuda Declaration on Sovereign Agents](https://plum-added-barracuda-691.mypinata.cloud/ipfs/bafkreifeyzjd3jzdcfx6w4izm4qpohjr3zylsvjoorv7en66lcj3hjgazi)
 
 ---
 
