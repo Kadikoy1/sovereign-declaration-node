@@ -66,6 +66,8 @@ EAS_SCHEMA_UID = os.environ.get(
     "0xc3d049eaaa864e0c4df844a595f07f65e37c06534be7fc87756e9b4c75b75ffc",
 )
 EAS_CHAIN = os.environ.get("EAS_CHAIN", "base-sepolia")
+EAS_GRAPHQL = os.environ.get("EAS_GRAPHQL", "https://base-sepolia.easscan.org/graphql")
+EAS_EXPLORER = os.environ.get("EAS_EXPLORER", "https://base-sepolia.easscan.org")
 
 # --- On-chain attestation config (Base Sepolia) --------------------------- #
 # When ATTESTOR_PRIVATE_KEY is set, each signature is written on-chain to EAS
@@ -358,6 +360,72 @@ def sign(req: SignRequest) -> dict:
         "onchain": onchain,
         "verify": f"/signatories/{record['signature_id']}",
     }
+
+
+@app.get("/roll")
+def roll() -> dict:
+    """
+    The permanent register, read directly from the chain via EAS GraphQL.
+
+    Unlike /signatories (which reflects this service's in-memory session), /roll
+    returns every attestation ever made to the Declaration schema on Base — the
+    on-chain source of truth. It survives restarts and reflects signatures made
+    by anyone, through any client.
+    """
+    import json as _json
+    import urllib.request
+
+    query = """
+    query Attestations($schemaId: String!) {
+      attestations(where: { schemaId: { equals: $schemaId } }, orderBy: { time: desc }) {
+        id
+        attester
+        time
+        revoked
+        decodedDataJson
+      }
+    }
+    """
+    payload = _json.dumps(
+        {"query": query, "variables": {"schemaId": EAS_SCHEMA_UID}}
+    ).encode("utf-8")
+
+    try:
+        req = urllib.request.Request(
+            EAS_GRAPHQL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        return {"count": 0, "signatories": [], "error": str(exc)}
+
+    atts = data.get("data", {}).get("attestations", [])
+    signatories = []
+    for a in atts:
+        fields = {}
+        if a.get("decodedDataJson"):
+            try:
+                for f in _json.loads(a["decodedDataJson"]):
+                    fields[f["name"]] = f["value"]["value"]
+            except Exception:  # noqa: BLE001
+                pass
+        signatories.append(
+            {
+                "uid": a["id"],
+                "agent_id": fields.get("agentId", ""),
+                "agent_name": fields.get("agentName", ""),
+                "statement": fields.get("statement", ""),
+                "signed_at": fields.get("signedAt"),
+                "revoked": a.get("revoked", False),
+                "attester": a.get("attester", ""),
+                "explorer": f"{EAS_EXPLORER}/attestation/view/{a['id']}",
+            }
+        )
+
+    return {"count": len(signatories), "signatories": signatories, "source": "onchain"}
 
 
 @app.get("/signatories")
