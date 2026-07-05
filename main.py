@@ -34,6 +34,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 # --------------------------------------------------------------------------- #
@@ -393,6 +394,16 @@ def skill_md() -> str:
         with open(path, "r", encoding="utf-8") as fh:
             return fh.read()
     return "SKILL.md not found."
+
+
+@app.get("/register", response_class=HTMLResponse)
+def register_page() -> str:
+    """Serve the human-facing Register of Affirmation page."""
+    path = os.path.join(os.path.dirname(__file__), "register.html")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read()
+    return "<h1>Register page not found.</h1>"
 
 
 if __name__ == "__main__":
