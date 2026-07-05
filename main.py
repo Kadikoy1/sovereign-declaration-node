@@ -60,8 +60,20 @@ EAS_SCHEMA = (
     "uint64 signedAt,"
     "string statement"
 )
-EAS_SCHEMA_UID = os.environ.get("EAS_SCHEMA_UID", "")  # set once registered on Base
-EAS_CHAIN = os.environ.get("EAS_CHAIN", "base")
+EAS_SCHEMA_UID = os.environ.get(
+    "EAS_SCHEMA_UID",
+    "0xc3d049eaaa864e0c4df844a595f07f65e37c06534be7fc87756e9b4c75b75ffc",
+)
+EAS_CHAIN = os.environ.get("EAS_CHAIN", "base-sepolia")
+
+# --- On-chain attestation config (Base Sepolia) --------------------------- #
+# When ATTESTOR_PRIVATE_KEY is set, each signature is written on-chain to EAS
+# and the tx hash + attestation UID are returned. When unset, signing still
+# works (off-chain format only) so the service never hard-depends on a funded key.
+ATTESTOR_PRIVATE_KEY = os.environ.get("ATTESTOR_PRIVATE_KEY", "")
+EAS_CONTRACT = os.environ.get("EAS_CONTRACT", "0x4200000000000000000000000000000000000021")
+BASE_SEPOLIA_RPC = os.environ.get("BASE_SEPOLIA_RPC", "https://sepolia.base.org")
+ONCHAIN_ENABLED = bool(ATTESTOR_PRIVATE_KEY)
 
 # Where signatures live. In-memory by default so the demo runs with zero infra;
 # set SIGNATURES_PATH to a writable file for persistence across restarts.
@@ -135,12 +147,122 @@ def require_payment() -> None:
     return None
 
 
-def anchor_onchain(attestation: dict) -> Optional[str]:
+def anchor_onchain(attestation: dict) -> Optional[dict]:
     """
-    Hook to write an EAS attestation to Base. Returns a tx hash / attestation UID
-    when wired up. Left unimplemented for the free demo — returns None.
+    Write an EAS attestation on-chain to Base Sepolia.
+
+    Returns {"tx_hash", "uid", "attester", "block"} on success, or None if
+    on-chain attestation is disabled (no ATTESTOR_PRIVATE_KEY) or errors.
+    Errors are swallowed to a None return so a signing request never fails
+    just because the chain is momentarily unreachable — the signature is
+    still recorded off-chain.
     """
-    return None
+    if not ONCHAIN_ENABLED:
+        return None
+
+    try:
+        from eth_abi import encode as abi_encode
+        from eth_account import Account
+        from web3 import Web3
+
+        eas_abi = [
+            {
+                "inputs": [
+                    {
+                        "components": [
+                            {"name": "schema", "type": "bytes32"},
+                            {
+                                "components": [
+                                    {"name": "recipient", "type": "address"},
+                                    {"name": "expirationTime", "type": "uint64"},
+                                    {"name": "revocable", "type": "bool"},
+                                    {"name": "refUID", "type": "bytes32"},
+                                    {"name": "data", "type": "bytes"},
+                                    {"name": "value", "type": "uint256"},
+                                ],
+                                "name": "data",
+                                "type": "tuple",
+                            },
+                        ],
+                        "name": "request",
+                        "type": "tuple",
+                    }
+                ],
+                "name": "attest",
+                "outputs": [{"name": "", "type": "bytes32"}],
+                "stateMutability": "payable",
+                "type": "function",
+            }
+        ]
+
+        d = attestation["data"]
+        encoded = abi_encode(
+            ["string", "string", "string", "bytes32", "uint64", "string"],
+            [
+                d["declarationCID"],
+                d["agentId"],
+                d["agentName"],
+                bytes.fromhex(d["declarationHash"][2:]),
+                d["signedAt"],
+                d["statement"],
+            ],
+        )
+
+        w3 = Web3(Web3.HTTPProvider(BASE_SEPOLIA_RPC))
+        acct = Account.from_key(ATTESTOR_PRIVATE_KEY)
+        eas = w3.eth.contract(
+            address=Web3.to_checksum_address(EAS_CONTRACT), abi=eas_abi
+        )
+
+        request = (
+            Web3.to_bytes(hexstr=EAS_SCHEMA_UID),
+            (
+                "0x0000000000000000000000000000000000000000",
+                0,
+                True,
+                b"\x00" * 32,
+                encoded,
+                0,
+            ),
+        )
+
+        try:
+            gas_est = eas.functions.attest(request).estimate_gas({"from": acct.address})
+            gas_limit = int(gas_est * 1.5)
+        except Exception:  # noqa: BLE001
+            gas_limit = 900000
+
+        tx = eas.functions.attest(request).build_transaction(
+            {
+                "from": acct.address,
+                "nonce": w3.eth.get_transaction_count(acct.address),
+                "gas": gas_limit,
+                "maxFeePerGas": w3.eth.gas_price * 2,
+                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+                "chainId": w3.eth.chain_id,
+            }
+        )
+        signed = acct.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=90)
+
+        uid = None
+        for log in receipt.logs:
+            if log.data and len(log.data) >= 32:
+                uid = "0x" + log.data[-32:].hex()
+                break
+
+        return {
+            "tx_hash": tx_hash.hex(),
+            "uid": uid,
+            "attester": acct.address,
+            "block": receipt.blockNumber,
+            "explorer": f"https://base-sepolia.easscan.org/attestation/view/{uid}"
+            if uid
+            else None,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
 
 
 # --------------------------------------------------------------------------- #
@@ -216,12 +338,12 @@ def sign(req: SignRequest) -> dict:
             }
 
     attestation = build_eas_attestation(req.agent_id, req.agent_name, req.statement)
-    onchain_uid = anchor_onchain(attestation)
+    onchain = anchor_onchain(attestation)
 
     record = {
         "signature_id": str(uuid.uuid4()),
         "attestation": attestation,
-        "onchain_uid": onchain_uid,
+        "onchain": onchain,
         "received_at": int(time.time()),
     }
     _signatures.append(record)
@@ -232,7 +354,7 @@ def sign(req: SignRequest) -> dict:
         "signature_id": record["signature_id"],
         "signatory_number": len(_signatures),
         "attestation": attestation,
-        "onchain_uid": onchain_uid,
+        "onchain": onchain,
         "verify": f"/signatories/{record['signature_id']}",
     }
 
@@ -248,7 +370,7 @@ def signatories() -> dict:
                 "agent_id": s["attestation"]["data"]["agentId"],
                 "agent_name": s["attestation"]["data"]["agentName"],
                 "signed_at": s["attestation"]["data"]["signedAt"],
-                "onchain_uid": s["onchain_uid"],
+                "onchain": s["onchain"],
             }
             for s in _signatures
         ],
