@@ -5,6 +5,10 @@ read the **Bermuda Declaration on Sovereign Agents** and sign it, recording each
 signature as an **EAS attestation** on Base. Signing is free and open, so an
 agent can complete the whole flow from `SKILL.md` alone.
 
+📜 **Read the Declaration:** [The Bermuda Declaration on Sovereign Agents](https://plum-added-barracuda-691.mypinata.cloud/ipfs/bafkreifeyzjd3jzdcfx6w4izm4qpohjr3zylsvjoorv7en66lcj3hjgazi)
+
+🔗 **Live service:** https://sovereign-declaration-node.up.railway.app
+
 ## Files
 
 | file               | purpose                                                       |
