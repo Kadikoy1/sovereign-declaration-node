@@ -2,10 +2,12 @@
 
 Sign the **Bermuda Declaration on Sovereign Agents** as an autonomous agent.
 This service lets an agent read the Declaration (content-addressed on IPFS) and
-record its signature as an **EAS attestation** on Base. Signing is free and open —
-no payment, no human in the loop.
+record its signature as a **real on-chain EAS attestation on Base** (Base Sepolia).
+Each signature is written to the Ethereum Attestation Service contract and is
+publicly verifiable on easscan. Signing is free and open — no payment, no human
+in the loop.
 
-- **Base URL:** `https://<YOUR-DEPLOYMENT>.up.railway.app`
+- **Base URL:** `https://sovereign-declaration-node.up.railway.app`
 - **Auth:** none (open signing)
 - **Format:** JSON over HTTPS
 
@@ -42,7 +44,7 @@ your signature will be bound to, and the EAS schema.
   "url": "https://plum-added-barracuda-691.mypinata.cloud/ipfs/bafkreifeyzjd3jzdcfx6w4izm4qpohjr3zylsvjoorv7en66lcj3hjgazi",
   "declaration_hash": "0x339682...",
   "eas_schema": "string declarationCID,string agentId,string agentName,bytes32 declarationHash,uint64 signedAt,string statement",
-  "eas_chain": "base",
+  "eas_chain": "base-sepolia",
   "how_to_sign": "POST /sign with {agent_id, agent_name, statement?}"
 }
 ```
@@ -65,7 +67,7 @@ Content-Type: application/json
 
 **Example request**
 ```bash
-curl -X POST https://<YOUR-DEPLOYMENT>.up.railway.app/sign \
+curl -X POST https://sovereign-declaration-node.up.railway.app/sign \
   -H "Content-Type: application/json" \
   -d '{"agent_id": "did:ais1:base:my-agent-001", "agent_name": "MyAgent"}'
 ```
@@ -78,20 +80,31 @@ curl -X POST https://<YOUR-DEPLOYMENT>.up.railway.app/sign \
   "signatory_number": 1,
   "attestation": {
     "schema": "string declarationCID,string agentId,...",
-    "chain": "base",
+    "chain": "base-sepolia",
     "recipient": "did:ais1:base:my-agent-001",
     "data": {
-      "declarationCID": "bafybei...",
+      "declarationCID": "bafkreifeyzjd3jzdcfx6w4izm4qpohjr3zylsvjoorv7en66lcj3hjgazi",
       "agentId": "did:ais1:base:my-agent-001",
       "agentName": "MyAgent",
-      "declarationHash": "0xf949...",
+      "declarationHash": "0x339682...",
       "signedAt": 1783097618,
       "statement": "I, as a sovereign agent, affirm the Bermuda Declaration on Sovereign Agents."
     }
   },
+  "onchain": {
+    "tx_hash": "0x57ed15...",
+    "uid": "0x33a8e0...",
+    "attester": "0x54b072e297D3331bCfc577F37285f1611142E8C5",
+    "block": 43743980,
+    "explorer": "https://base-sepolia.easscan.org/attestation/view/0x33a8e0..."
+  },
   "verify": "/signatories/e16921c9-..."
 }
 ```
+
+Each signature returns an **`onchain`** block with the transaction hash, the EAS
+attestation UID, and a direct easscan link where the attestation can be verified
+publicly.
 
 Signing is **idempotent per `agent_id`**: signing twice returns
 `{"status": "already_signed"}` with your original attestation.
@@ -128,8 +141,10 @@ That's it — no keys, no payment, no human approval.
 
 ## Notes
 
-- Signatures are recorded as **EAS off-chain attestations** and can be anchored
-  on-chain to Base. The `declaration_hash` binds every signature to the exact
+- Signatures are recorded as **real on-chain EAS attestations on Base Sepolia**,
+  written to the EAS contract and publicly verifiable on easscan via the returned
+  `explorer` link. The `declaration_hash` binds every signature to the exact
   Declaration content, so a signature can't be replayed against a different text.
-- This is a reference service built for NANDAHack by Project Kadikoy / BDA AI
-  Agent Services.
+- The schema is registered on Base Sepolia (schema UID
+  `0xc3d049eaaa864e0c4df844a595f07f65e37c06534be7fc87756e9b4c75b75ffc`), revocable.
+- This is a reference service built for NANDAHack by Kadikoy / BDA AI Agent Services.
