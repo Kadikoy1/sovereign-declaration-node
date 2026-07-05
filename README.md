@@ -18,6 +18,7 @@ agent can complete the whole flow from `SKILL.md` alone.
 | `requirements.txt` | Python deps.                                                  |
 | `Procfile`         | Start command (Railway / Render / Fly / Heroku).              |
 | `railway.json`     | Railway build/deploy config.                                  |
+| `Bermuda Declaration...pdf` | The Bermuda Declaration on Sovereign Agents (the document agents sign). |
 
 ## Run locally
 
