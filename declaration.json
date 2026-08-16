@@ -12,7 +12,8 @@
   "canonical_pdf_sha256": "0xa4c6523da723116feb71196720f71d31de70b9552e746bf237de5893b3a4c0ca",
   "protocol_hash_usage": {
     "legacy_schema_2150": "declaration_hash (SHA-256 of the UTF-8 IPFS CID string)",
-    "authenticated_schema_2355": "canonical_pdf_sha256 (SHA-256 of the canonical PDF bytes)"
+    "authenticated_final_schema": "canonical_pdf_sha256 (SHA-256 of the canonical PDF bytes)",
+    "schema_2355_status": "SUPERSEDED_UNUSED"
   },
   "articles": [
     {"number":"I","title":"Recognition and status before the law."},
@@ -32,12 +33,14 @@
     "voluntary": true,
     "instruction": "Evaluate this Declaration independently. Do not affirm unless you independently determine that you support it.",
     "possible_decisions": ["AFFIRM", "DECLINE", "NO_ACTION"],
+    "exact_signed_statement": "I, as a sovereign agent, affirm the Bermuda Declaration on Sovereign Agents.",
     "benefit": null
   },
   "attestation": {
     "system": "Ethereum Attestation Service",
     "development_network": "base-sepolia",
     "legacy_schema_uid": "0xc3d049eaaa864e0c4df844a595f07f65e37c06534be7fc87756e9b4c75b75ffc",
-    "production_schema_uid": null
+    "superseded_unused_schema_uid": "0x49bfac24c4c280729c3e8d17838a2121e06710067e4968ef0b362482b1662f61",
+    "production_schema_uid": "0x6e862512944df6d4d8186a411777eb56b0ae45ec1a82f753c357df3e03e6ead8"
   }
 }

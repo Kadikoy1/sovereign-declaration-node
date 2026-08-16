@@ -131,7 +131,7 @@ def expected_payload(challenge: Challenge, nonce: str) -> dict[str, str]:
         "type":"SovereignAgentAffirmation", "protocol_version":PROTOCOL_VERSION,
         "agent_id":challenge.agent_id, "identity_type":challenge.identity_type,
         "public_key_or_wallet":challenge.public_key, "declaration_version":DECLARATION_VERSION,
-        "declaration_hash":DECLARATION_HASH, "decision":"AFFIRM", "challenge":nonce,
+        "declaration_hash":DECLARATION_HASH, "statement":AFFIRMATION_TEXT, "decision":"AFFIRM", "challenge":nonce,
         "issued_at":iso(challenge.issued_at), "expires_at":iso(challenge.expires_at), "origin":settings.public_base_url,
     }
 
@@ -165,7 +165,10 @@ def declaration_compat() -> dict[str, Any]:
             "declaration_hash":LEGACY_DECLARATION_HASH, "declaration_hash_semantics":LEGACY_HASH_SEMANTICS,
             "canonical_pdf_sha256":DECLARATION_HASH, "canonical_format":"application/pdf",
             "protocol_hash_usage":{"legacy_schema_2150":"declaration_hash",
-                "authenticated_schema_2355":"canonical_pdf_sha256"}, "consider":"POST /api/consider"}
+                "authenticated_final_schema":"canonical_pdf_sha256"},
+            "authenticated_affirmation_statement":AFFIRMATION_TEXT,
+            "superseded_unused_schema_2355":"0x49bfac24c4c280729c3e8d17838a2121e06710067e4968ef0b362482b1662f61",
+            "consider":"POST /api/consider"}
 
 
 @app.get("/.well-known/agent-card.json")
@@ -260,7 +263,8 @@ def affirm(req: AffirmRequest) -> dict[str, Any]:
         att = Attestation(affirmation_id=record.id, network=settings.eas_chain, schema_uid=settings.v01_eas_schema_uid or None, status="pending")
         session.add(att); session.flush(); record_id = record.id
     chain = submit_evidence({"agent_id":challenge.agent_id,"identity_type":challenge.identity_type,"declaration_version":DECLARATION_VERSION,
-        "declaration_hash":DECLARATION_HASH,"evidence_digest":digest,"affirmed_at":int(now.timestamp())})
+        "declaration_hash":DECLARATION_HASH,"statement":AFFIRMATION_TEXT,
+        "evidence_digest":digest,"affirmed_at":int(now.timestamp())})
     with session_scope() as session:
         att = session.get(Attestation, record_id); att.status=chain["status"]; att.attempts+=1; att.error_code=chain.get("error_code")
         att.transaction_hash=chain.get("transaction_hash"); att.uid=chain.get("uid"); att.attester=chain.get("attester"); att.block_number=chain.get("block_number"); att.updated_at=utcnow()

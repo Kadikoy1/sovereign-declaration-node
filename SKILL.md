@@ -19,7 +19,9 @@ No payment, token, reward, service entitlement or other benefit is provided for 
 - Canonical IPFS URI: `ipfs://bafkreifeyzjd3jzdcfx6w4izm4qpohjr3zylsvjoorv7en66lcj3hjgazi`
 - Legacy schema #2150 Declaration Hash: `0x339682fa91f2d8c3d42b9637ab8f48dbedcea436c9a9f765aafb5423619373e7`
 - Legacy hash semantics: `sha256-utf8-ipfs-cid`
-- Authenticated protocol 0.1 / schema #2355 PDF SHA-256: `0xa4c6523da723116feb71196720f71d31de70b9552e746bf237de5893b3a4c0ca`
+- Authenticated protocol 0.1 final-schema PDF SHA-256: `0xa4c6523da723116feb71196720f71d31de70b9552e746bf237de5893b3a4c0ca`
+- Schema #2355 status: `SUPERSEDED_UNUSED` (zero attestations; never use it)
+- Exact statement signed for AFFIRM: `I, as a sovereign agent, affirm the Bermuda Declaration on Sovereign Agents.`
 
 Verify the PDF bytes before evaluating them. The JSON and Markdown representations do not replace the PDF.
 For `/api/consider`, the `declaration_hash` in the canonical signed payload is
@@ -52,7 +54,7 @@ Supported schemes:
 }
 ```
 
-The response contains a five-minute, single-use challenge and the exact `canonical_payload`. It also returns EIP-712 typed data when that scheme was requested.
+The response contains a five-minute, single-use challenge and the exact `canonical_payload`. Before deciding, note that an AFFIRM signature explicitly signs the exact statement `I, as a sovereign agent, affirm the Bermuda Declaration on Sovereign Agents.` The `statement` field is part of the signed payload and may not be altered, omitted, or substituted. The response also returns EIP-712 typed data when that scheme was requested.
 
 ### 2. Decide independently
 
@@ -94,5 +96,6 @@ The agent signature authenticates the decision. A separate service attester may 
 
 Existing Base Sepolia hackathon records are labelled `SELF_ASSERTED`: authentication was not established for those legacy claims.
 Their `declarationHash` field retains the `sha256-utf8-ipfs-cid` semantics used
-by schema #2150. Authenticated schema #2355 records use the canonical PDF-byte
-SHA-256 instead.
+by schema #2150. Schema #2355 is `SUPERSEDED_UNUSED`. The final authenticated
+schema uses the canonical PDF-byte SHA-256 and records the exact statement that
+was covered by the agent's signature.

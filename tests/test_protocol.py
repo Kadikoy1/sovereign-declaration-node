@@ -6,12 +6,14 @@ import rfc8785
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from eth_account import Account
 from eth_account.messages import encode_typed_data
+from eth_abi import decode as abi_decode
 
-from auth import eip712_typed_data
+from auth import eip712_typed_data, verify_signature
 from declaration import (CANONICAL_CID, DECLARATION_HASH, EXPECTED_HASH,
-    LEGACY_DECLARATION_HASH, LEGACY_HASH_SEMANTICS, canonical_pdf_path,
+    AFFIRMATION_TEXT, LEGACY_DECLARATION_HASH, LEGACY_HASH_SEMANTICS, canonical_pdf_path,
     cid_embedded_sha256, legacy_cid_string_hash)
 from storage import Challenge, session_scope
+from eas import encode_evidence_data
 
 
 def b64(value: bytes) -> str:
@@ -46,8 +48,10 @@ def test_legacy_cid_hash_and_canonical_cid_digest(client):
     assert compat["canonical_pdf_sha256"]==DECLARATION_HASH
     assert compat["protocol_hash_usage"]=={
         "legacy_schema_2150":"declaration_hash",
-        "authenticated_schema_2355":"canonical_pdf_sha256",
+        "authenticated_final_schema":"canonical_pdf_sha256",
     }
+    assert compat["authenticated_affirmation_statement"]==AFFIRMATION_TEXT
+    assert compat["superseded_unused_schema_2355"]=="0x49bfac24c4c280729c3e8d17838a2121e06710067e4968ef0b362482b1662f61"
 
 
 def test_authenticated_challenge_uses_pdf_byte_hash(client):
@@ -55,6 +59,7 @@ def test_authenticated_challenge_uses_pdf_byte_hash(client):
     challenge,_=consider_ed(client,key,"did:key:hash-regression")
     assert challenge["declaration_hash"]==DECLARATION_HASH
     assert challenge["canonical_payload"]["declaration_hash"]==DECLARATION_HASH
+    assert challenge["canonical_payload"]["statement"]==AFFIRMATION_TEXT
     assert challenge["declaration_hash"]!=LEGACY_DECLARATION_HASH
 
 
@@ -92,6 +97,42 @@ def test_altered_payload_and_wrong_signature_rejected(client):
     response=client.post("/api/affirm",json={"payload":challenge["canonical_payload"],"signature_scheme":"ED25519_RFC8785",
         "public_key_or_wallet":public,"signature":b64(b"x"*64)})
     assert response.status_code==401
+
+
+def test_statement_is_signed_and_one_character_change_is_rejected(client):
+    key=Ed25519PrivateKey.generate(); challenge, public=consider_ed(client,key,"did:key:statement")
+    payload=challenge["canonical_payload"]
+    assert payload["statement"]==AFFIRMATION_TEXT
+    signature=b64(key.sign(rfc8785.dumps(payload)))
+    altered=payload | {"statement":AFFIRMATION_TEXT[:-1]+"!"}
+    response=client.post("/api/affirm",json={"payload":altered,"signature_scheme":"ED25519_RFC8785",
+        "public_key_or_wallet":public,"signature":signature})
+    assert response.status_code==422
+    omitted={key:value for key,value in payload.items() if key!="statement"}
+    response=client.post("/api/affirm",json={"payload":omitted,"signature_scheme":"ED25519_RFC8785",
+        "public_key_or_wallet":public,"signature":signature})
+    assert response.status_code==422
+
+
+def test_eip712_statement_change_breaks_signature(client):
+    account=Account.create()
+    challenge=client.post("/api/consider",json={"agent_id":"did:pkh:eip155:84532:"+account.address,
+        "identity_type":"evm_address","signature_scheme":"EIP712","public_key_or_wallet":account.address}).json()
+    payload=challenge["canonical_payload"]
+    signature=Account.sign_message(encode_typed_data(full_message=eip712_typed_data(payload,84532)),account.key).signature.hex()
+    altered=payload | {"statement":payload["statement"]+" "}
+    assert verify_signature("EIP712",payload,account.address,signature,84532) is True
+    assert verify_signature("EIP712",altered,account.address,signature,84532) is False
+
+
+def test_eas_encoding_records_exact_signed_statement():
+    encoded=encode_evidence_data({"agent_id":"did:test:statement","identity_type":"ed25519",
+        "declaration_version":"1.0","declaration_hash":DECLARATION_HASH,"statement":AFFIRMATION_TEXT,
+        "evidence_digest":"0x"+"11"*32,"affirmed_at":1})
+    decoded=abi_decode(["string","string","string","bytes32","string","bytes32","uint64","string"],encoded)
+    assert decoded[4]==AFFIRMATION_TEXT
+    assert decoded[3].hex()==DECLARATION_HASH[2:]
+    assert decoded[7]=="AUTHENTICATED"
 
 
 def test_eip712_affirmation(client):

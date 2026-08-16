@@ -8,11 +8,21 @@ from web3 import Web3
 
 from settings import settings
 
-V01_EAS_SCHEMA = "string agentId,string identityType,string declarationVersion,bytes32 declarationHash,bytes32 evidenceDigest,uint64 affirmedAt,string verificationLevel"
+V01_EAS_SCHEMA = "string agentId,string identityType,string declarationVersion,bytes32 declarationHash,string statement,bytes32 evidenceDigest,uint64 affirmedAt,string verificationLevel"
+SUPERSEDED_UNUSED_SCHEMA_UID = "0x49bfac24c4c280729c3e8d17838a2121e06710067e4968ef0b362482b1662f61"
 EAS_ABI = [
     {"inputs":[{"components":[{"name":"schema","type":"bytes32"},{"components":[{"name":"recipient","type":"address"},{"name":"expirationTime","type":"uint64"},{"name":"revocable","type":"bool"},{"name":"refUID","type":"bytes32"},{"name":"data","type":"bytes"},{"name":"value","type":"uint256"}],"name":"data","type":"tuple"}],"name":"request","type":"tuple"}],"name":"attest","outputs":[{"name":"","type":"bytes32"}],"stateMutability":"payable","type":"function"},
     {"anonymous":False,"inputs":[{"indexed":True,"name":"recipient","type":"address"},{"indexed":True,"name":"attester","type":"address"},{"indexed":False,"name":"uid","type":"bytes32"},{"indexed":True,"name":"schemaUID","type":"bytes32"}],"name":"Attested","type":"event"},
 ]
+
+
+def encode_evidence_data(data: dict[str, Any]) -> bytes:
+    return abi_encode(
+        ["string","string","string","bytes32","string","bytes32","uint64","string"],
+        [data["agent_id"], data["identity_type"], data["declaration_version"],
+         bytes.fromhex(data["declaration_hash"][2:]), data["statement"],
+         bytes.fromhex(data["evidence_digest"][2:]), data["affirmed_at"], "AUTHENTICATED"],
+    )
 
 
 def submit_evidence(data: dict[str, Any]) -> dict[str, Any]:
@@ -22,12 +32,7 @@ def submit_evidence(data: dict[str, Any]) -> dict[str, Any]:
         w3 = Web3(Web3.HTTPProvider(settings.base_rpc_url, request_kwargs={"timeout": 30}))
         account = Account.from_key(settings.attestor_private_key)
         contract = w3.eth.contract(address=Web3.to_checksum_address(settings.eas_contract), abi=EAS_ABI)
-        encoded = abi_encode(
-            ["string","string","string","bytes32","bytes32","uint64","string"],
-            [data["agent_id"], data["identity_type"], data["declaration_version"],
-             bytes.fromhex(data["declaration_hash"][2:]), bytes.fromhex(data["evidence_digest"][2:]),
-             data["affirmed_at"], "AUTHENTICATED"],
-        )
+        encoded = encode_evidence_data(data)
         request = (Web3.to_bytes(hexstr=settings.v01_eas_schema_uid),
                    ("0x0000000000000000000000000000000000000000", 0, True, b"\x00"*32, encoded, 0))
         tx = contract.functions.attest(request).build_transaction({

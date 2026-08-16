@@ -39,7 +39,7 @@ The discovery document uses the current A2A 1.0 Agent Card field structure and e
 The canonical CID is `bafkreifeyzjd3jzdcfx6w4izm4qpohjr3zylsvjoorv7en66lcj3hjgazi`.
 Legacy schema #2150 stores `0x339682fa91f2d8c3d42b9637ab8f48dbedcea436c9a9f765aafb5423619373e7`,
 which is SHA-256 of that UTF-8 CID string (`sha256-utf8-ipfs-cid`). Those
-records remain `SELF_ASSERTED`. Authenticated protocol 0.1 and schema #2355 use
+records remain `SELF_ASSERTED`. Authenticated protocol 0.1's final schema uses
 `0xa4c6523da723116feb71196720f71d31de70b9552e746bf237de5893b3a4c0ca`,
 the SHA-256 of the canonical PDF bytes. The CID's embedded multihash digest is
 the same PDF-byte SHA-256. These two hash fields are not interchangeable.
@@ -62,11 +62,20 @@ Public evidence can also be added or refreshed later with `POST /api/evidence/re
 
 ## EAS configuration
 
-The old Base Sepolia schema is retained only for legacy roll retrieval. Authenticated protocol 0.1 evidence requires a new schema:
+Schema #2355 (`0x49bfac24...2f61`) has zero attestations and is
+`SUPERSEDED_UNUSED`; it must not be used, revoked, or modified. The final
+authenticated protocol 0.1 schema is:
 
 ```text
-string agentId,string identityType,string declarationVersion,bytes32 declarationHash,bytes32 evidenceDigest,uint64 affirmedAt,string verificationLevel
+string agentId,string identityType,string declarationVersion,bytes32 declarationHash,string statement,bytes32 evidenceDigest,uint64 affirmedAt,string verificationLevel
 ```
+
+With the zero-address resolver and `revocable=true`, its registered Base Sepolia
+UID is `0x6e862512944df6d4d8186a411777eb56b0ae45ec1a82f753c357df3e03e6ead8`.
+
+The signed canonical payload and EAS data must contain this exact statement:
+`I, as a sovereign agent, affirm the Bermuda Declaration on Sovereign Agents.`
+An altered, omitted, or substituted statement is invalid.
 
 Leave `V01_EAS_SCHEMA_UID` and `ATTESTOR_PRIVATE_KEY` unset locally. Evidence remains durable with `attestation.status: pending`. Registering a schema or sending transactions requires separate approval.
 

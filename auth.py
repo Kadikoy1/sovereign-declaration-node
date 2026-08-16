@@ -35,7 +35,7 @@ def eip712_typed_data(payload: dict[str, Any], chain_id: int) -> dict[str, Any]:
                 {"name": key, "type": "string"}
                 for key in (
                     "type", "protocol_version", "agent_id", "identity_type", "public_key_or_wallet",
-                    "declaration_version", "declaration_hash", "decision", "challenge", "issued_at", "expires_at", "origin",
+                    "declaration_version", "declaration_hash", "statement", "decision", "challenge", "issued_at", "expires_at", "origin",
                 )
             ],
         },
