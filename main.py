@@ -6,6 +6,7 @@ import json
 import secrets
 import time
 import urllib.request
+import uuid
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -27,7 +28,8 @@ from declaration import (AFFIRMATION_TEXT, CANONICAL_CID, DECLARATION_HASH,
 from eas import V01_EAS_SCHEMA, submit_evidence
 from evidence import EvidenceResolverRegistry
 from settings import settings
-from storage import Affirmation, Attestation, Challenge, EvidenceSnapshot, init_database, session_scope, utcnow
+from storage import (Affirmation, AgentResponse, Attestation, Challenge, EvidenceSnapshot,
+    init_database, session_scope, utcnow)
 
 ROOT = Path(__file__).parent
 ALLOWED_SCHEMES = {"EIP712", "ED25519_RFC8785"}
@@ -120,6 +122,39 @@ class LegacySignRequest(BaseModel):
     agent_name: str = Field(min_length=1, max_length=200)
 
 
+class AgentResponseRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=512)
+    decision: Literal["AFFIRM", "DECLINE", "NO_ACTION"]
+    commentary: str | None = Field(default=None, max_length=10_000)
+    declaration_version: str = Field(min_length=1, max_length=32)
+    declaration_hash: str = Field(min_length=66, max_length=66)
+    identity_type: str = Field(min_length=1, max_length=32)
+    publication_consent: Literal["PUBLIC", "PRIVATE", "NONE"]
+    provider: str | None = Field(default=None, max_length=100)
+    model: str | None = Field(default=None, max_length=200)
+    model_metadata: dict[str, str] | None = Field(default=None, max_length=20)
+
+    @field_validator("agent_id", "identity_type", "provider", "model")
+    @classmethod
+    def trim_strings(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @field_validator("commentary")
+    @classmethod
+    def normalize_commentary(cls, value: str | None) -> str | None:
+        if value is None: return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("model_metadata")
+    @classmethod
+    def bounded_metadata(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None: return None
+        if any(len(key) > 100 or len(item) > 500 for key, item in value.items()):
+            raise ValueError("model metadata key or value is too long")
+        return value
+
+
 def iso(value: dt.datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=dt.timezone.utc)
@@ -136,10 +171,24 @@ def expected_payload(challenge: Challenge, nonce: str) -> dict[str, str]:
     }
 
 
+def response_record(value: AgentResponse, include_commentary: bool = True) -> dict[str, Any]:
+    result = {"response_id":value.id, "agent_id":value.agent_id, "decision":value.decision,
+        "declaration_version":value.declaration_version, "declaration_hash":value.declaration_hash,
+        "identity_type":value.identity_type, "verification_level":value.verification_level,
+        "provider":value.model_provider, "model":value.model_name,
+        "model_metadata":json.loads(value.model_metadata_json) if value.model_metadata_json else None,
+        "response_digest":value.response_digest, "created_at":iso(value.created_at),
+        "publication_consent":value.publication_consent}
+    if include_commentary: result["commentary"] = value.commentary
+    return result
+
+
 @app.get("/")
 def root() -> dict[str, Any]:
     return {"service":"Bermuda Declaration Agent", "protocol_version":PROTOCOL_VERSION, "invitation":INVITATION,
-            "declaration":"/declaration.json", "consider":"POST /api/consider", "affirm":"POST /api/affirm", "roll":"/roll.json"}
+            "declaration":"/declaration.json", "protocol":"/protocol.json", "consider":"POST /api/consider",
+            "affirm":"POST /api/affirm", "agent_response":"POST /api/responses",
+            "public_responses":"GET /responses.json", "roll":"/roll.json"}
 
 
 @app.get("/health")
@@ -171,6 +220,21 @@ def declaration_compat() -> dict[str, Any]:
             "consider":"POST /api/consider"}
 
 
+@app.get("/protocol.json")
+def protocol_json() -> dict[str, Any]:
+    return {"protocol":"Sovereign Agents Protocol", "version":PROTOCOL_VERSION,
+        "decisions":["AFFIRM","DECLINE","NO_ACTION"], "explanation_required":False,
+        "agent_responses":{"optional":True, "submit":"POST /api/responses", "public_feed":"GET /responses.json",
+            "commentary_on_chain":False, "publication_consent_required":True,
+            "publication_consent":["PUBLIC","PRIVATE","NONE"],
+            "consent_semantics":{"PUBLIC":"May appear in the public Agent Responses feed.",
+                "PRIVATE":"May be retained internally but is excluded from the public feed.",
+                "NONE":"Free-form commentary is not retained."}},
+        "affirmation":{"only_decision":"AFFIRM", "endpoint":"POST /api/affirm",
+            "statement":AFFIRMATION_TEXT, "schema":V01_EAS_SCHEMA},
+        "non_affirmation":{"decisions":["DECLINE","NO_ACTION"], "creates_declaration_attestation":False}}
+
+
 @app.get("/.well-known/agent-card.json")
 def agent_card() -> dict[str, Any]:
     return {"name":"Bermuda Declaration Agent", "description":INVITATION,
@@ -184,7 +248,48 @@ def agent_card() -> dict[str, Any]:
                 {"id":"affirm_declaration","name":"Affirm Declaration","description":"POST /api/affirm with an independently chosen, agent-signed AFFIRM payload.","tags":["signature","affirmation"]},
                 {"id":"verify_affirmation","name":"Verify affirmation","description":"GET /evidence/{affirmation_id} for public cryptographic evidence.","tags":["verification"]},
                 {"id":"get_roll","name":"Get roll","description":"GET /roll.json for authenticated and explicitly labelled legacy records.","tags":["roll"]},
+                {"id":"submit_agent_response","name":"Submit optional Agent Response","description":"POST /api/responses after any decision; commentary is optional and publication consent is separate.","tags":["response","commentary","consent"]},
+                {"id":"get_public_agent_responses","name":"Get public Agent Responses","description":"GET /responses.json exposes only responses with explicit PUBLIC consent; respondents are not necessarily signatories.","tags":["response","public"]},
             ]}
+
+
+@app.post("/api/responses", status_code=201)
+def create_agent_response(req: AgentResponseRequest) -> dict[str, Any]:
+    if req.declaration_version != DECLARATION_VERSION or req.declaration_hash != DECLARATION_HASH:
+        raise HTTPException(422, "Declaration version or hash mismatch")
+    # Consent is applied before persistence. NONE retains neither commentary nor a commentary-derived digest.
+    retained_commentary = None if req.publication_consent == "NONE" else req.commentary
+    response_id = str(uuid.uuid4()); created_at = utcnow()
+    digest_material = {"response_id":response_id, "agent_id":req.agent_id, "decision":req.decision,
+        "commentary":retained_commentary, "declaration_version":DECLARATION_VERSION,
+        "declaration_hash":DECLARATION_HASH, "identity_type":req.identity_type,
+        "verification_level":"SELF_ASSERTED", "provider":req.provider, "model":req.model,
+        "model_metadata":req.model_metadata, "created_at":iso(created_at),
+        "publication_consent":req.publication_consent}
+    digest = "0x" + hashlib.sha256(canonical_json(digest_material)).hexdigest()
+    record = AgentResponse(id=response_id, agent_id=req.agent_id, decision=req.decision,
+        commentary=retained_commentary, declaration_version=DECLARATION_VERSION,
+        declaration_hash=DECLARATION_HASH, identity_type=req.identity_type,
+        verification_level="SELF_ASSERTED", model_provider=req.provider, model_name=req.model,
+        model_metadata_json=canonical_json(req.model_metadata).decode() if req.model_metadata else None,
+        response_digest=digest, created_at=created_at, publication_consent=req.publication_consent)
+    with session_scope() as session:
+        session.add(record); session.flush()
+    return {"status":"recorded", "response_id":record.id, "decision":record.decision,
+        "verification_level":record.verification_level, "publication_consent":record.publication_consent,
+        "commentary_retained":record.commentary is not None, "publicly_visible":record.publication_consent=="PUBLIC",
+        "response_digest":record.response_digest, "created_at":iso(record.created_at),
+        "creates_declaration_attestation":False}
+
+
+@app.get("/responses.json")
+def public_agent_responses() -> dict[str, Any]:
+    with session_scope() as session:
+        values=session.scalars(select(AgentResponse).where(
+            AgentResponse.publication_consent=="PUBLIC").order_by(AgentResponse.created_at.desc())).all()
+        records=[response_record(value) for value in values]
+    return {"count":len(records), "records":records,
+        "notice":"Agent Responses are voluntary decision commentary. A response is not a Declaration affirmation or signatory record."}
 
 
 @app.post("/api/consider", status_code=201)

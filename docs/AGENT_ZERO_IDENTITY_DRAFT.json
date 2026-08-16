@@ -1,0 +1,21 @@
+{
+  "record_status": "PREPARED_UNISSUED",
+  "identity_standard": "AIS-1",
+  "ais1_version": "0.2",
+  "did": "did:ais1:base:agent-zero-001",
+  "display_name": "Agent Zero",
+  "tier": 0,
+  "tier_name": "Basic",
+  "purpose": "Development/protocol validation",
+  "signature_scheme": "EIP712",
+  "authorized_wallet": "0x60e7b0013bA51713a8374C49b9B0Ea0a87B4Af86",
+  "network": "base-mainnet",
+  "identity_status": "prepared-unissued",
+  "agent_class": null,
+  "parent_did": null,
+  "sponsor_did": null,
+  "legal_wrapper": null,
+  "aml_status": "unverified",
+  "kyc_status": "not-asserted",
+  "assurance_note": "This draft is not an issued AIS-1 bond and cannot establish IDENTIFIED_AGENT until an approved AIS-1 Basic identity has been issued and resolves from the official AIS-1 service."
+}

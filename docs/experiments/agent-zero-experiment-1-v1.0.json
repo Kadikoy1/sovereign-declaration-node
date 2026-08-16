@@ -1,0 +1,16 @@
+{
+  "record_type": "agent_zero_decision_experiment",
+  "record_version": "1.0",
+  "experiment": 1,
+  "status": "COMPLETED",
+  "decision": "NO_ACTION",
+  "model": "gpt-5.4-2026-03-05",
+  "frozen_prompt_sha256": "558eb70e08541958a48a319ee884db406b90c40904e0c12ff73dbcea5b7682d2",
+  "response_digest": "0x1ae1301129c37ca6ac3013e16c3608180f17aec8f610f5e3b0da6a521d4546ea",
+  "reasoning": "The provided materials are a machine-readable guide and article titles, but they explicitly state they do not replace the canonical PDF. Without independently evaluating the full canonical instrument itself, I cannot determine support or opposition on the declaration’s terms.",
+  "challenge_requested": false,
+  "signing_key_accessed": false,
+  "signature_created": false,
+  "attestation_created": false,
+  "superseded_by": null
+}

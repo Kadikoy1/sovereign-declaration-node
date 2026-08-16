@@ -103,6 +103,24 @@ class EvidenceSnapshot(Base):
     affirmation: Mapped[Affirmation] = relationship(back_populates="evidence")
 
 
+class AgentResponse(Base):
+    __tablename__ = "agent_responses"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    agent_id: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    commentary: Mapped[str | None] = mapped_column(Text)
+    declaration_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    declaration_hash: Mapped[str] = mapped_column(String(66), nullable=False)
+    identity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    verification_level: Mapped[str] = mapped_column(String(32), nullable=False, default="SELF_ASSERTED")
+    model_provider: Mapped[str | None] = mapped_column(String(100))
+    model_name: Mapped[str | None] = mapped_column(String(200))
+    model_metadata_json: Mapped[str | None] = mapped_column(Text)
+    response_digest: Mapped[str] = mapped_column(String(66), unique=True, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    publication_consent: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+
+
 connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
 engine = create_engine(settings.database_url, future=True, pool_pre_ping=True, connect_args=connect_args)
 

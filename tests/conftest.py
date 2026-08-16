@@ -13,6 +13,13 @@ import main
 from storage import engine
 
 
+@pytest.fixture(autouse=True)
+def reset_in_memory_rate_limit():
+    main._requests.clear()
+    yield
+    main._requests.clear()
+
+
 @pytest.fixture(scope="session")
 def client():
     main.submit_evidence = lambda _: {"status":"pending","error_code":"ATTESTER_NOT_CONFIGURED"}
