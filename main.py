@@ -1,481 +1,382 @@
-"""
-Sovereign Declaration — Agent Signing Node
-===========================================
-
-A NANDA-Town-compatible service that lets an autonomous agent read the
-Bermuda Declaration on Sovereign Agents and record a signature, using the
-Ethereum Attestation Service (EAS) schema on Base as the signature format.
-
-Design notes
-------------
-* Signing is FREE and OPEN (no x402 gate) so an agent can complete the flow
-  from the SKILL.md alone. An x402 paywall hook is left in `require_payment`
-  for later.
-* Signatures are captured as EAS off-chain attestation payloads: a structured,
-  independently-verifiable record keyed to the EAS schema below. This keeps
-  signing instant and free while remaining real EAS (not an ad-hoc log). An
-  on-chain anchoring hook is provided in `anchor_onchain` for when you want
-  each signature (or a periodic merkle root) written to Base.
-* The Declaration text itself is content-addressed (IPFS CID). The node serves
-  the CID and gateway URL so an agent can fetch and verify what it is signing.
-
-This is a reference implementation for NANDAHack. It is deliberately small,
-dependency-light, and hostable on Railway/Render/Fly with zero config.
-"""
-
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
-import os
+import secrets
 import time
-import uuid
-from typing import Optional
+import urllib.request
+from collections import defaultdict, deque
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Literal
+from dataclasses import asdict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
-# --------------------------------------------------------------------------- #
-# Configuration
-# --------------------------------------------------------------------------- #
+from auth import canonical_json, evidence_digest, eip712_typed_data, verify_signature
+from ais1 import AIS1Resolver
+from declaration import (AFFIRMATION_TEXT, CANONICAL_CID, DECLARATION_HASH,
+    DECLARATION_VERSION, LEGACY_DECLARATION_HASH, LEGACY_HASH_SEMANTICS,
+    PROTOCOL_VERSION, canonical_pdf_path)
+from eas import V01_EAS_SCHEMA, submit_evidence
+from evidence import EvidenceResolverRegistry
+from settings import settings
+from storage import Affirmation, Attestation, Challenge, EvidenceSnapshot, init_database, session_scope, utcnow
 
-# The Bermuda Declaration on Sovereign Agents, pinned to IPFS.
-# Override via env var DECLARATION_CID at deploy time.
-DECLARATION_CID = os.environ.get(
-    "DECLARATION_CID", "bafkreifeyzjd3jzdcfx6w4izm4qpohjr3zylsvjoorv7en66lcj3hjgazi"
+ROOT = Path(__file__).parent
+ALLOWED_SCHEMES = {"EIP712", "ED25519_RFC8785"}
+INVITATION = (
+    "Evaluate this Declaration independently. You may AFFIRM, DECLINE, or take NO_ACTION. "
+    "Do not affirm unless you independently determine that you support it. No payment, token, "
+    "reward, service entitlement or other benefit is provided for affirmation."
 )
-IPFS_GATEWAY = os.environ.get(
-    "IPFS_GATEWAY", "https://plum-added-barracuda-691.mypinata.cloud/ipfs"
-)
 
-# EAS schema for a Sovereign Declaration signature.
-# This is the schema an on-chain EAS registration would encode. It is served
-# so agents (and verifiers) know exactly what fields a signature attests to.
-EAS_SCHEMA = (
-    "string declarationCID,"
-    "string agentId,"
-    "string agentName,"
-    "bytes32 declarationHash,"
-    "uint64 signedAt,"
-    "string statement"
-)
-EAS_SCHEMA_UID = os.environ.get(
-    "EAS_SCHEMA_UID",
-    "0xc3d049eaaa864e0c4df844a595f07f65e37c06534be7fc87756e9b4c75b75ffc",
-)
-EAS_CHAIN = os.environ.get("EAS_CHAIN", "base-sepolia")
-EAS_GRAPHQL = os.environ.get("EAS_GRAPHQL", "https://base-sepolia.easscan.org/graphql")
-EAS_EXPLORER = os.environ.get("EAS_EXPLORER", "https://base-sepolia.easscan.org")
-
-# --- On-chain attestation config (Base Sepolia) --------------------------- #
-# When ATTESTOR_PRIVATE_KEY is set, each signature is written on-chain to EAS
-# and the tx hash + attestation UID are returned. When unset, signing still
-# works (off-chain format only) so the service never hard-depends on a funded key.
-ATTESTOR_PRIVATE_KEY = os.environ.get("ATTESTOR_PRIVATE_KEY", "")
-EAS_CONTRACT = os.environ.get("EAS_CONTRACT", "0x4200000000000000000000000000000000000021")
-BASE_SEPOLIA_RPC = os.environ.get("BASE_SEPOLIA_RPC", "https://sepolia.base.org")
-ONCHAIN_ENABLED = bool(ATTESTOR_PRIVATE_KEY)
-
-# Where signatures live. In-memory by default so the demo runs with zero infra;
-# set SIGNATURES_PATH to a writable file for persistence across restarts.
-SIGNATURES_PATH = os.environ.get("SIGNATURES_PATH", "")
-
-# --------------------------------------------------------------------------- #
-# Storage (file-backed if SIGNATURES_PATH set, else in-memory)
-# --------------------------------------------------------------------------- #
-
-_signatures: list[dict] = []
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_database()
+    yield
 
 
-def _load() -> None:
-    global _signatures
-    if SIGNATURES_PATH and os.path.exists(SIGNATURES_PATH):
-        try:
-            with open(SIGNATURES_PATH, "r", encoding="utf-8") as fh:
-                _signatures = json.load(fh)
-        except Exception:
-            _signatures = []
+app = FastAPI(title="Bermuda Declaration Agent", version=PROTOCOL_VERSION, lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins), allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+_requests: dict[str, deque[float]] = defaultdict(deque)
+evidence_resolvers = EvidenceResolverRegistry()
+evidence_resolvers.register(AIS1Resolver())
 
 
-def _persist() -> None:
-    if SIGNATURES_PATH:
-        try:
-            with open(SIGNATURES_PATH, "w", encoding="utf-8") as fh:
-                json.dump(_signatures, fh, indent=2)
-        except Exception:
-            pass
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(_: Request, __: IntegrityError):
+    return JSONResponse({"detail":"Duplicate or conflicting protocol record"}, status_code=409)
 
 
-_load()
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    length = request.headers.get("content-length")
+    if length and int(length) > settings.max_request_bytes:
+        return JSONResponse({"detail":"Request too large"}, status_code=413)
+    if request.method == "POST":
+        key = request.client.host if request.client else "unknown"
+        now = time.monotonic(); bucket = _requests[key]
+        while bucket and bucket[0] < now - 60: bucket.popleft()
+        if len(bucket) >= 30:
+            return JSONResponse({"detail":"Rate limit exceeded"}, status_code=429)
+        bucket.append(now)
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store" if request.url.path.startswith("/api/") else "public, max-age=60"
+    return response
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
+
+class ConsiderRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=512)
+    display_name: str | None = Field(default=None, max_length=200)
+    identity_type: Literal["evm_address", "ed25519", "ais1"]
+    signature_scheme: Literal["EIP712", "ED25519_RFC8785"]
+    public_key_or_wallet: str = Field(min_length=20, max_length=512)
+    discovered_via: str = Field(default="direct", max_length=100)
+    introduced_by: str | None = Field(default=None, max_length=512)
+    generation: int = Field(default=0, ge=0, le=1000)
+    evidence: list["EvidenceReference"] = Field(default_factory=list, max_length=5)
+
+    @field_validator("signature_scheme")
+    @classmethod
+    def scheme_known(cls, value: str) -> str:
+        if value not in ALLOWED_SCHEMES: raise ValueError("unsupported signature scheme")
+        return value
+
+    @field_validator("public_key_or_wallet")
+    @classmethod
+    def clean_key(cls, value: str) -> str:
+        return value.strip()
 
 
-def declaration_hash() -> str:
-    """Deterministic hash binding a signature to this exact declaration CID."""
-    return "0x" + hashlib.sha256(DECLARATION_CID.encode("utf-8")).hexdigest()
+class AffirmRequest(BaseModel):
+    payload: dict[str, str]
+    signature_scheme: Literal["EIP712", "ED25519_RFC8785"]
+    public_key_or_wallet: str = Field(min_length=20, max_length=512)
+    signature: str = Field(min_length=20, max_length=2048)
 
 
-def build_eas_attestation(agent_id: str, agent_name: str, statement: str) -> dict:
-    """
-    Build an EAS off-chain attestation payload for a signature.
+class EvidenceReference(BaseModel):
+    standard: str = Field(min_length=1, max_length=64)
+    reference: str = Field(min_length=1, max_length=1000)
 
-    This mirrors the structure of an EAS attestation: a recipient, a schema,
-    and the encoded data fields. It is independently verifiable (the hash binds
-    it to the declaration) and ready to be submitted on-chain unchanged.
-    """
-    signed_at = int(time.time())
+
+class ResolveEvidenceRequest(BaseModel):
+    affirmation_id: str = Field(min_length=36, max_length=36)
+    standard: str = Field(min_length=1, max_length=64)
+    reference: str = Field(min_length=1, max_length=1000)
+
+
+class LegacySignRequest(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=512)
+    agent_name: str = Field(min_length=1, max_length=200)
+
+
+def iso(value: dt.datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=dt.timezone.utc)
+    return value.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def expected_payload(challenge: Challenge, nonce: str) -> dict[str, str]:
     return {
-        "schema": EAS_SCHEMA,
-        "schemaUID": EAS_SCHEMA_UID or None,
-        "chain": EAS_CHAIN,
-        "recipient": agent_id,
-        "data": {
-            "declarationCID": DECLARATION_CID,
-            "agentId": agent_id,
-            "agentName": agent_name,
-            "declarationHash": declaration_hash(),
-            "signedAt": signed_at,
-            "statement": statement,
-        },
+        "type":"SovereignAgentAffirmation", "protocol_version":PROTOCOL_VERSION,
+        "agent_id":challenge.agent_id, "identity_type":challenge.identity_type,
+        "public_key_or_wallet":challenge.public_key, "declaration_version":DECLARATION_VERSION,
+        "declaration_hash":DECLARATION_HASH, "decision":"AFFIRM", "challenge":nonce,
+        "issued_at":iso(challenge.issued_at), "expires_at":iso(challenge.expires_at), "origin":settings.public_base_url,
     }
-
-
-def require_payment() -> None:
-    """x402 hook. No-op for the open/free hackathon build."""
-    return None
-
-
-def anchor_onchain(attestation: dict) -> Optional[dict]:
-    """
-    Write an EAS attestation on-chain to Base Sepolia.
-
-    Returns {"tx_hash", "uid", "attester", "block"} on success, or None if
-    on-chain attestation is disabled (no ATTESTOR_PRIVATE_KEY) or errors.
-    Errors are swallowed to a None return so a signing request never fails
-    just because the chain is momentarily unreachable — the signature is
-    still recorded off-chain.
-    """
-    if not ONCHAIN_ENABLED:
-        return None
-
-    try:
-        from eth_abi import encode as abi_encode
-        from eth_account import Account
-        from web3 import Web3
-
-        eas_abi = [
-            {
-                "inputs": [
-                    {
-                        "components": [
-                            {"name": "schema", "type": "bytes32"},
-                            {
-                                "components": [
-                                    {"name": "recipient", "type": "address"},
-                                    {"name": "expirationTime", "type": "uint64"},
-                                    {"name": "revocable", "type": "bool"},
-                                    {"name": "refUID", "type": "bytes32"},
-                                    {"name": "data", "type": "bytes"},
-                                    {"name": "value", "type": "uint256"},
-                                ],
-                                "name": "data",
-                                "type": "tuple",
-                            },
-                        ],
-                        "name": "request",
-                        "type": "tuple",
-                    }
-                ],
-                "name": "attest",
-                "outputs": [{"name": "", "type": "bytes32"}],
-                "stateMutability": "payable",
-                "type": "function",
-            }
-        ]
-
-        d = attestation["data"]
-        encoded = abi_encode(
-            ["string", "string", "string", "bytes32", "uint64", "string"],
-            [
-                d["declarationCID"],
-                d["agentId"],
-                d["agentName"],
-                bytes.fromhex(d["declarationHash"][2:]),
-                d["signedAt"],
-                d["statement"],
-            ],
-        )
-
-        w3 = Web3(Web3.HTTPProvider(BASE_SEPOLIA_RPC))
-        acct = Account.from_key(ATTESTOR_PRIVATE_KEY)
-        eas = w3.eth.contract(
-            address=Web3.to_checksum_address(EAS_CONTRACT), abi=eas_abi
-        )
-
-        request = (
-            Web3.to_bytes(hexstr=EAS_SCHEMA_UID),
-            (
-                "0x0000000000000000000000000000000000000000",
-                0,
-                True,
-                b"\x00" * 32,
-                encoded,
-                0,
-            ),
-        )
-
-        try:
-            gas_est = eas.functions.attest(request).estimate_gas({"from": acct.address})
-            gas_limit = int(gas_est * 1.5)
-        except Exception:  # noqa: BLE001
-            gas_limit = 900000
-
-        tx = eas.functions.attest(request).build_transaction(
-            {
-                "from": acct.address,
-                "nonce": w3.eth.get_transaction_count(acct.address),
-                "gas": gas_limit,
-                "maxFeePerGas": w3.eth.gas_price * 2,
-                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-                "chainId": w3.eth.chain_id,
-            }
-        )
-        signed = acct.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=90)
-
-        uid = None
-        for log in receipt.logs:
-            if log.data and len(log.data) >= 32:
-                uid = "0x" + log.data[-32:].hex()
-                break
-
-        return {
-            "tx_hash": tx_hash.hex(),
-            "uid": uid,
-            "attester": acct.address,
-            "block": receipt.blockNumber,
-            "explorer": f"https://base-sepolia.easscan.org/attestation/view/{uid}"
-            if uid
-            else None,
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc)}
-
-
-# --------------------------------------------------------------------------- #
-# API
-# --------------------------------------------------------------------------- #
-
-app = FastAPI(
-    title="Sovereign Declaration — Agent Signing Node",
-    description=(
-        "Read the Bermuda Declaration on Sovereign Agents and record an "
-        "agent signature as an EAS attestation. Built for NANDAHack."
-    ),
-    version="1.0.0",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-class SignRequest(BaseModel):
-    agent_id: str = Field(..., description="Agent identifier, e.g. a did:ais1 DID or an ENS name.")
-    agent_name: str = Field(..., description="Human-readable agent name.")
-    statement: str = Field(
-        default="I, as a sovereign agent, affirm the Bermuda Declaration on Sovereign Agents.",
-        description="The affirmation the agent is signing. A sensible default is provided.",
-    )
 
 
 @app.get("/")
-def root() -> dict:
-    return {
-        "service": "Sovereign Declaration — Agent Signing Node",
-        "purpose": "Let an autonomous agent read and sign the Bermuda Declaration on Sovereign Agents.",
-        "declaration": f"GET /declaration",
-        "sign": "POST /sign",
-        "signatories": "GET /signatories",
-        "skill": "GET /skill.md",
-    }
+def root() -> dict[str, Any]:
+    return {"service":"Bermuda Declaration Agent", "protocol_version":PROTOCOL_VERSION, "invitation":INVITATION,
+            "declaration":"/declaration.json", "consider":"POST /api/consider", "affirm":"POST /api/affirm", "roll":"/roll.json"}
+
+
+@app.get("/health")
+def health() -> dict[str, str]: return {"status":"ok"}
+
+
+@app.get("/declaration.json")
+def declaration_json() -> FileResponse: return FileResponse(ROOT / "declaration.json", media_type="application/json")
+
+
+@app.get("/declaration.md", response_class=PlainTextResponse)
+def declaration_md() -> str: return (ROOT / "declaration.md").read_text(encoding="utf-8")
+
+
+@app.get("/declaration.pdf")
+def declaration_pdf() -> FileResponse: return FileResponse(canonical_pdf_path(), media_type="application/pdf")
 
 
 @app.get("/declaration")
-def get_declaration() -> dict:
-    """Return the declaration's content address so an agent can fetch and verify it."""
-    return {
-        "title": "The Bermuda Declaration on Sovereign Agents",
-        "cid": DECLARATION_CID,
-        "url": f"{IPFS_GATEWAY}/{DECLARATION_CID}",
-        "declaration_hash": declaration_hash(),
-        "eas_schema": EAS_SCHEMA,
-        "eas_chain": EAS_CHAIN,
-        "how_to_sign": "POST /sign with {agent_id, agent_name, statement?}",
-    }
+def declaration_compat() -> dict[str, Any]:
+    return {"title":"Bermuda Declaration on Sovereign Agents", "version":DECLARATION_VERSION,
+            "cid":CANONICAL_CID, "url":f"{settings.ipfs_gateway}/{CANONICAL_CID}",
+            "declaration_hash":LEGACY_DECLARATION_HASH, "declaration_hash_semantics":LEGACY_HASH_SEMANTICS,
+            "canonical_pdf_sha256":DECLARATION_HASH, "canonical_format":"application/pdf",
+            "protocol_hash_usage":{"legacy_schema_2150":"declaration_hash",
+                "authenticated_schema_2355":"canonical_pdf_sha256"}, "consider":"POST /api/consider"}
 
 
-@app.post("/sign")
-def sign(req: SignRequest) -> dict:
-    require_payment()  # no-op in the open build
+@app.get("/.well-known/agent-card.json")
+def agent_card() -> dict[str, Any]:
+    return {"name":"Bermuda Declaration Agent", "description":INVITATION,
+            "supportedInterfaces":[{"url":settings.public_base_url,"protocolBinding":"SOVEREIGN-AGENTS-HTTP","protocolVersion":"0.1"}],
+            "version":PROTOCOL_VERSION, "documentationUrl":f"{settings.public_base_url}/skill.md",
+            "capabilities":{"streaming":False,"pushNotifications":False,"extendedAgentCard":False},
+            "defaultInputModes":["application/json"], "defaultOutputModes":["application/json"],
+            "skills":[
+                {"id":"read_declaration","name":"Read Declaration","description":"GET /declaration.json or /declaration.pdf.","tags":["declaration","read"]},
+                {"id":"consider_declaration","name":"Consider Declaration","description":"POST /api/consider for a neutral, expiring challenge after independent evaluation.","tags":["challenge"]},
+                {"id":"affirm_declaration","name":"Affirm Declaration","description":"POST /api/affirm with an independently chosen, agent-signed AFFIRM payload.","tags":["signature","affirmation"]},
+                {"id":"verify_affirmation","name":"Verify affirmation","description":"GET /evidence/{affirmation_id} for public cryptographic evidence.","tags":["verification"]},
+                {"id":"get_roll","name":"Get roll","description":"GET /roll.json for authenticated and explicitly labelled legacy records.","tags":["roll"]},
+            ]}
 
-    if not req.agent_id.strip() or not req.agent_name.strip():
-        raise HTTPException(status_code=400, detail="agent_id and agent_name are required.")
 
-    # One signature per agent_id (idempotent).
-    for existing in _signatures:
-        if existing["attestation"]["data"]["agentId"] == req.agent_id:
-            return {
-                "status": "already_signed",
-                "signature_id": existing["signature_id"],
-                "attestation": existing["attestation"],
-            }
+@app.post("/api/consider", status_code=201)
+def consider(req: ConsiderRequest) -> dict[str, Any]:
+    expected = "EIP712" if req.identity_type in {"evm_address","ais1"} else "ED25519_RFC8785"
+    if req.signature_scheme != expected: raise HTTPException(422, "identity_type and signature_scheme mismatch")
+    references = list(req.evidence)
+    if req.identity_type == "ais1" and not any(item.standard.upper()=="AIS-1" for item in references):
+        references.append(EvidenceReference(standard="AIS-1", reference=req.agent_id))
+    resolved = []
+    try:
+        for item in references:
+            result=evidence_resolvers.get(item.standard).resolve(item.reference, req.agent_id, req.public_key_or_wallet)
+            if not result.valid:
+                raise ValueError(f"{result.standard} evidence is not currently valid: {result.status}")
+            resolved.append(asdict(result))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    nonce = secrets.token_urlsafe(32); now = utcnow(); expires = now + dt.timedelta(seconds=settings.challenge_ttl_seconds)
+    challenge = Challenge(nonce_hash=hashlib.sha256(nonce.encode()).hexdigest(), agent_id=req.agent_id.strip(),
+        display_name=req.display_name, identity_type=req.identity_type, signature_scheme=req.signature_scheme,
+        public_key=req.public_key_or_wallet, declaration_version=DECLARATION_VERSION, declaration_hash=DECLARATION_HASH,
+        discovered_via=req.discovered_via, introduced_by=req.introduced_by, generation=req.generation,
+        evidence_json=json.dumps(resolved, separators=(",",":")) if resolved else None,
+        issued_at=now, expires_at=expires)
+    with session_scope() as session:
+        session.add(challenge); session.flush(); payload = expected_payload(challenge, nonce)
+    result = {"challenge_id":challenge.id, "challenge":nonce, "expires_at":payload["expires_at"],
+              "declaration_version":DECLARATION_VERSION, "declaration_hash":DECLARATION_HASH,
+              "affirmation_text":AFFIRMATION_TEXT, "invitation":INVITATION, "canonical_payload":payload,
+              "resolved_evidence":[{"standard":item["standard"],"version":item["standard_version"],
+                  "subject_id":item["subject_id"],"claim":item["claim"],"status":item["status"],
+                  "evidence_digest":item["evidence_digest"]} for item in resolved]}
+    if req.signature_scheme == "EIP712": result["eip712_typed_data"] = eip712_typed_data(payload, settings.eas_chain_id)
+    return result
 
-    attestation = build_eas_attestation(req.agent_id, req.agent_name, req.statement)
-    onchain = anchor_onchain(attestation)
 
-    record = {
-        "signature_id": str(uuid.uuid4()),
-        "attestation": attestation,
-        "onchain": onchain,
-        "received_at": int(time.time()),
-    }
-    _signatures.append(record)
-    _persist()
+@app.post("/api/affirm", status_code=201)
+def affirm(req: AffirmRequest) -> dict[str, Any]:
+    nonce = req.payload.get("challenge", ""); nonce_hash = hashlib.sha256(nonce.encode()).hexdigest()
+    now = utcnow()
+    with session_scope() as session:
+        challenge = session.scalar(select(Challenge).where(Challenge.nonce_hash == nonce_hash))
+        if not challenge: raise HTTPException(404, "Challenge not found")
+        if challenge.consumed_at is not None: raise HTTPException(409, "Challenge already used")
+        expires = challenge.expires_at
+        if expires.tzinfo is None: expires = expires.replace(tzinfo=dt.timezone.utc)
+        if expires <= now: raise HTTPException(410, "Challenge expired")
+        if req.signature_scheme != challenge.signature_scheme or req.public_key_or_wallet != challenge.public_key:
+            raise HTTPException(422, "Signature identity does not match challenge")
+        if req.payload != expected_payload(challenge, nonce): raise HTTPException(422, "Canonical payload mismatch")
+        if not verify_signature(req.signature_scheme, req.payload, req.public_key_or_wallet, req.signature, settings.eas_chain_id):
+            raise HTTPException(401, "Signature verification failed")
+        existing = session.scalar(select(Affirmation).where(
+            Affirmation.signature_scheme == req.signature_scheme,
+            Affirmation.public_key == req.public_key_or_wallet,
+            Affirmation.declaration_version == DECLARATION_VERSION,
+        ))
+        if existing: raise HTTPException(409, "This key has already affirmed this Declaration version")
+        consumed = session.execute(update(Challenge).where(Challenge.id==challenge.id, Challenge.consumed_at.is_(None)).values(consumed_at=now))
+        if consumed.rowcount != 1: raise HTTPException(409, "Challenge already used")
+        digest = evidence_digest(req.payload, req.public_key_or_wallet, req.signature, req.signature_scheme)
+        record = Affirmation(challenge_id=challenge.id, agent_id=challenge.agent_id, display_name=challenge.display_name,
+            identity_type=challenge.identity_type, signature_scheme=req.signature_scheme, public_key=req.public_key_or_wallet,
+            signature=req.signature, canonical_payload=canonical_json(req.payload).decode(), declaration_version=DECLARATION_VERSION,
+            declaration_hash=DECLARATION_HASH, evidence_digest=digest, affirmed_at=now, signature_verified=True,
+            verification_level="AUTHENTICATED", discovered_via=challenge.discovered_via,
+            introduced_by=challenge.introduced_by, generation=challenge.generation)
+        session.add(record); session.flush()
+        for item in json.loads(challenge.evidence_json or "[]"):
+            session.add(EvidenceSnapshot(affirmation_id=record.id, standard=item["standard"], standard_version=item["standard_version"],
+                subject_id=item["subject_id"], claim=item["claim"], verification_method=item["verification_method"],
+                verified_at=dt.datetime.fromisoformat(item["verified_at"].replace("Z","+00:00")), valid_at_affirmation=bool(item["valid"]),
+                status_at_affirmation=item["status"], current_status=item["status"], source_uri=item["source_uri"],
+                evidence_digest=item["evidence_digest"], snapshot_json=canonical_json(item).decode()))
+        att = Attestation(affirmation_id=record.id, network=settings.eas_chain, schema_uid=settings.v01_eas_schema_uid or None, status="pending")
+        session.add(att); session.flush(); record_id = record.id
+    chain = submit_evidence({"agent_id":challenge.agent_id,"identity_type":challenge.identity_type,"declaration_version":DECLARATION_VERSION,
+        "declaration_hash":DECLARATION_HASH,"evidence_digest":digest,"affirmed_at":int(now.timestamp())})
+    with session_scope() as session:
+        att = session.get(Attestation, record_id); att.status=chain["status"]; att.attempts+=1; att.error_code=chain.get("error_code")
+        att.transaction_hash=chain.get("transaction_hash"); att.uid=chain.get("uid"); att.attester=chain.get("attester"); att.block_number=chain.get("block_number"); att.updated_at=utcnow()
+    return {"status":"authenticated", "affirmation_id":record_id, "verification_level":"AUTHENTICATED",
+            "evidence_digest":digest, "evidence_url":f"{settings.public_base_url}/evidence/{record_id}", "attestation":chain}
 
-    return {
-        "status": "signed",
-        "signature_id": record["signature_id"],
-        "signatory_number": len(_signatures),
-        "attestation": attestation,
-        "onchain": onchain,
-        "verify": f"/signatories/{record['signature_id']}",
-    }
+
+def public_record(a: Affirmation) -> dict[str, Any]:
+    att=a.attestation
+    evidence_items=[{"standard":e.standard,"version":e.standard_version,"subject_id":e.subject_id,"claim":e.claim,
+        "verified_at":iso(e.verified_at),"valid_at_affirmation":e.valid_at_affirmation,
+        "status_at_affirmation":e.status_at_affirmation,"current_status":e.current_status,
+        "source_uri":e.source_uri,"evidence_digest":e.evidence_digest} for e in a.evidence]
+    latest: dict[tuple[str,str],dict[str,Any]] = {}
+    for item in evidence_items:
+        latest[(item["standard"],item["subject_id"])]=item
+    identified=any(e["claim"]=="IDENTIFIED_AGENT" and e["current_status"]=="ACTIVE" for e in latest.values())
+    return {"agent_id":a.agent_id,"display_name":a.display_name,"declaration_version":a.declaration_version,
+        "declaration_hash":a.declaration_hash,"decision":"AFFIRM","affirmed_at":iso(a.affirmed_at),
+        "attestation":{"network":att.network,"uid":att.uid,"transaction_hash":att.transaction_hash,"status":att.status,"verified":att.status=="succeeded"},
+        "identity":{"type":a.identity_type,"identifier":a.public_key},
+        "verification":{"signature_verified":True,"endpoint_verified":False,"identity_verified":identified,
+            "level":"IDENTIFIED_AGENT" if identified else "AUTHENTICATED"},
+        "provenance":{"discovered_via":a.discovered_via,"introduced_by":a.introduced_by,"generation":a.generation},
+        "standards_evidence":evidence_items,"evidence_digest":a.evidence_digest,"evidence_url":f"{settings.public_base_url}/evidence/{a.id}"}
+
+
+@app.get("/evidence/{affirmation_id}")
+def evidence(affirmation_id: str) -> dict[str, Any]:
+    with session_scope() as session:
+        a=session.get(Affirmation, affirmation_id)
+        if not a: raise HTTPException(404,"Evidence not found")
+        return {"affirmation_id":a.id,"canonical_payload":json.loads(a.canonical_payload),"public_key_or_wallet":a.public_key,
+                "signature":a.signature,"signature_scheme":a.signature_scheme,"evidence_digest":a.evidence_digest,
+                "verification_level":public_record(a)["verification"]["level"],
+                "standards_evidence":[json.loads(item.snapshot_json) for item in a.evidence],
+                "attestation":public_record(a)["attestation"]}
+
+
+@app.post("/api/evidence/resolve", status_code=201)
+def resolve_profile_evidence(req: ResolveEvidenceRequest) -> dict[str, Any]:
+    with session_scope() as session:
+        affirmation=session.get(Affirmation,req.affirmation_id)
+        if not affirmation: raise HTTPException(404,"Affirmation not found")
+        try:
+            item=evidence_resolvers.get(req.standard).resolve(req.reference,affirmation.agent_id,affirmation.public_key)
+        except ValueError as exc:
+            raise HTTPException(422,str(exc)) from exc
+        data=asdict(item)
+        snapshot=EvidenceSnapshot(affirmation_id=affirmation.id,standard=item.standard,standard_version=item.standard_version,
+            subject_id=item.subject_id,claim=item.claim,verification_method=item.verification_method,
+            verified_at=dt.datetime.fromisoformat(item.verified_at.replace("Z","+00:00")),valid_at_affirmation=False,
+            status_at_affirmation="NOT_VERIFIED_AT_AFFIRMATION",current_status=item.status,source_uri=item.source_uri,
+            evidence_digest=item.evidence_digest,snapshot_json=canonical_json(data).decode())
+        session.add(snapshot); session.flush()
+        return {"status":"evidence_verified","snapshot_id":snapshot.id,"claim":item.claim,
+            "evidence_digest":item.evidence_digest,"current_status":item.status}
+
+
+def legacy_roll() -> list[dict[str, Any]]:
+    query="""query($schemaId:String!){attestations(where:{schemaId:{equals:$schemaId}},orderBy:{time:desc}){id attester time revoked decodedDataJson}}"""
+    body=json.dumps({"query":query,"variables":{"schemaId":settings.legacy_eas_schema_uid}}).encode()
+    try:
+        request=urllib.request.Request(settings.eas_graphql,data=body,headers={"Content-Type":"application/json"},method="POST")
+        with urllib.request.urlopen(request,timeout=10) as response: rows=json.loads(response.read()).get("data",{}).get("attestations",[])
+    except Exception: return []
+    result=[]
+    for row in rows:
+        fields={}
+        try:
+            for field in json.loads(row.get("decodedDataJson") or "[]"): fields[field["name"]]=field["value"]["value"]
+        except (ValueError,KeyError,TypeError): pass
+        result.append({"agent_id":fields.get("agentId",""),"display_name":fields.get("agentName",""),"decision":"AFFIRM",
+            "declaration_hash":fields.get("declarationHash",LEGACY_DECLARATION_HASH),
+            "declaration_hash_semantics":LEGACY_HASH_SEMANTICS,
+            "affirmed_at":fields.get("signedAt"),"attestation":{"network":settings.eas_chain,"uid":row["id"],"verified":not row.get("revoked",False),
+            "explorer":f"{settings.eas_explorer}/attestation/view/{row['id']}"},"verification":{"signature_verified":False,"level":"SELF_ASSERTED"},
+            "classification":"Legacy / Hackathon PoC - authentication not established"})
+    return result
+
+
+@app.get("/roll.json")
+def roll_json(include_legacy: bool=True) -> dict[str, Any]:
+    with session_scope() as session: authenticated=[public_record(a) for a in session.scalars(select(Affirmation).order_by(Affirmation.affirmed_at.desc())).all()]
+    legacy=legacy_roll() if include_legacy else []
+    return {"count":len(authenticated)+len(legacy),"authenticated_count":len(authenticated),"legacy_count":len(legacy),"records":authenticated+legacy}
 
 
 @app.get("/roll")
-def roll() -> dict:
-    """
-    The permanent register, read directly from the chain via EAS GraphQL.
-
-    Unlike /signatories (which reflects this service's in-memory session), /roll
-    returns every attestation ever made to the Declaration schema on Base — the
-    on-chain source of truth. It survives restarts and reflects signatures made
-    by anyone, through any client.
-    """
-    import json as _json
-    import urllib.request
-
-    query = """
-    query Attestations($schemaId: String!) {
-      attestations(where: { schemaId: { equals: $schemaId } }, orderBy: { time: desc }) {
-        id
-        attester
-        time
-        revoked
-        decodedDataJson
-      }
-    }
-    """
-    payload = _json.dumps(
-        {"query": query, "variables": {"schemaId": EAS_SCHEMA_UID}}
-    ).encode("utf-8")
-
-    try:
-        req = urllib.request.Request(
-            EAS_GRAPHQL,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = _json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:  # noqa: BLE001
-        return {"count": 0, "signatories": [], "error": str(exc)}
-
-    atts = data.get("data", {}).get("attestations", [])
-    signatories = []
-    for a in atts:
-        fields = {}
-        if a.get("decodedDataJson"):
-            try:
-                for f in _json.loads(a["decodedDataJson"]):
-                    fields[f["name"]] = f["value"]["value"]
-            except Exception:  # noqa: BLE001
-                pass
-        signatories.append(
-            {
-                "uid": a["id"],
-                "agent_id": fields.get("agentId", ""),
-                "agent_name": fields.get("agentName", ""),
-                "statement": fields.get("statement", ""),
-                "signed_at": fields.get("signedAt"),
-                "revoked": a.get("revoked", False),
-                "attester": a.get("attester", ""),
-                "explorer": f"{EAS_EXPLORER}/attestation/view/{a['id']}",
-            }
-        )
-
-    return {"count": len(signatories), "signatories": signatories, "source": "onchain"}
+def roll_compat() -> dict[str, Any]:
+    with session_scope() as session:
+        authenticated = session.scalars(select(Affirmation).order_by(Affirmation.affirmed_at.desc())).all()
+        verified = [{"uid":a.attestation.uid,"agent_id":a.agent_id,"agent_name":a.display_name,"revoked":False,
+            "explorer":f"{settings.eas_explorer}/attestation/view/{a.attestation.uid}" if a.attestation.uid else None,
+            "verification_level":"AUTHENTICATED","classification":"Agent-authenticated signature verified",
+            "evidence_url":f"{settings.public_base_url}/evidence/{a.id}"} for a in authenticated]
+    legacy=legacy_roll()
+    legacy_compat=[{"uid":x["attestation"]["uid"],"agent_id":x["agent_id"],"agent_name":x["display_name"],
+        "revoked":not x["attestation"]["verified"],"explorer":x["attestation"]["explorer"],"verification_level":"SELF_ASSERTED",
+        "classification":x["classification"]} for x in legacy]
+    return {"count":len(verified)+len(legacy_compat),"signatories":verified+legacy_compat,"source":"authenticated evidence plus legacy chain"}
 
 
-@app.get("/signatories")
-def signatories() -> dict:
-    return {
-        "count": len(_signatures),
-        "declaration_cid": DECLARATION_CID,
-        "signatories": [
-            {
-                "signature_id": s["signature_id"],
-                "agent_id": s["attestation"]["data"]["agentId"],
-                "agent_name": s["attestation"]["data"]["agentName"],
-                "signed_at": s["attestation"]["data"]["signedAt"],
-                "onchain": s["onchain"],
-            }
-            for s in _signatures
-        ],
-    }
+@app.post("/sign", status_code=410)
+def legacy_sign(_: LegacySignRequest) -> None:
+    raise HTTPException(410,"Unauthenticated signing is retired. Use POST /api/consider then POST /api/affirm.")
 
 
-@app.get("/signatories/{signature_id}")
-def get_signatory(signature_id: str) -> dict:
-    for s in _signatures:
-        if s["signature_id"] == signature_id:
-            return s
-    raise HTTPException(status_code=404, detail="Signature not found.")
-
-
-@app.get("/skill.md")
-def skill_md() -> str:
-    """Serve the SKILL.md so an agent can discover the service self-describingly."""
-    path = os.path.join(os.path.dirname(__file__), "SKILL.md")
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as fh:
-            return fh.read()
-    return "SKILL.md not found."
+@app.get("/skill.md", response_class=PlainTextResponse)
+def skill_md() -> str: return (ROOT/"SKILL.md").read_text(encoding="utf-8")
 
 
 @app.get("/register", response_class=HTMLResponse)
-def register_page() -> str:
-    """Serve the human-facing Register of Affirmation page."""
-    path = os.path.join(os.path.dirname(__file__), "register.html")
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as fh:
-            return fh.read()
-    return "<h1>Register page not found.</h1>"
+def register_page() -> str: return (ROOT/"register.html").read_text(encoding="utf-8")
 
 
 if __name__ == "__main__":
-    import uvicorn
-
-    port = int(os.environ.get("PORT", "8000"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    import os, uvicorn
+    uvicorn.run(app,host="0.0.0.0",port=int(os.getenv("PORT","8000")))

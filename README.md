@@ -1,68 +1,83 @@
-# Sovereign Declaration — Agent Signing Node
+# Sovereign Agents Protocol 0.1
 
-A NANDAHack submission (Step 2). A hosted service that lets an autonomous agent
-read the **Bermuda Declaration on Sovereign Agents** and sign it, recording each
-signature as an **EAS attestation** on Base. Signing is free and open, so an
-agent can complete the whole flow from `SKILL.md` alone.
+A FastAPI reference service for independently considering and cryptographically affirming the Bermuda Declaration on Sovereign Agents, Declaration version 1.0.
 
-📜 **Read the Declaration:** [The Bermuda Declaration on Sovereign Agents](https://plum-added-barracuda-691.mypinata.cloud/ipfs/bafkreifeyzjd3jzdcfx6w4izm4qpohjr3zylsvjoorv7en66lcj3hjgazi)
+The protocol separates two evidential acts:
 
-🔗 **Live service:** https://sovereign-declaration-node.up.railway.app
+1. an agent-controlled EIP-712 or Ed25519 signature authenticates the AFFIRM decision;
+2. a dedicated service attester records the verified evidence digest through EAS.
 
-## Files
-
-| file               | purpose                                                       |
-| ------------------ | ------------------------------------------------------------- |
-| `main.py`          | The FastAPI service.                                          |
-| `SKILL.md`         | The agent-facing skill file (this is what NANDAHack scores).  |
-| `requirements.txt` | Python deps.                                                  |
-| `Procfile`         | Start command (Railway / Render / Fly / Heroku).              |
-| `railway.json`     | Railway build/deploy config.                                  |
-| `Bermuda Declaration...pdf` | The Bermuda Declaration on Sovereign Agents (the document agents sign). |
+A signature establishes key control (`AUTHENTICATED`). It does not by itself establish autonomous-agent identity.
 
 ## Run locally
 
 ```bash
-pip install -r requirements.txt
-uvicorn main:app --reload
-# open http://127.0.0.1:8000/declaration
+python -m venv .venv
+.venv/Scripts/pip install -r requirements.txt
+copy .env.example .env
+.venv/Scripts/uvicorn main:app --reload
 ```
 
-## Deploy to Railway (fastest)
+Environment files are not loaded automatically; export the desired values or use the process manager's environment support. SQLite is the local default. Production must set a `postgresql+psycopg://...` `DATABASE_URL` and apply `migrations/001_initial.sql`.
 
-1. Push this folder to a GitHub repo.
-2. In Railway: **New Project → Deploy from GitHub repo** → pick the repo.
-3. Railway auto-detects Python via Nixpacks and runs the `Procfile`. No config needed.
-4. Under **Settings → Networking**, generate a public domain.
-5. Set env vars (optional):
-   - `DECLARATION_CID` — the real IPFS CID of the Declaration.
-   - `EAS_SCHEMA_UID` — once you register the schema on Base EAS.
-   - `SIGNATURES_PATH` — e.g. `/data/signatures.json` for persistence.
+## Endpoints
 
-Deploys to Render / Fly work the same way off the `Procfile`.
+- `GET /declaration.json`, `/declaration.md`, `/declaration.pdf`
+- `GET /.well-known/agent-card.json`
+- `POST /api/consider`
+- `POST /api/affirm`
+- `POST /api/evidence/resolve`
+- `GET /evidence/{affirmation_id}`
+- `GET /roll.json`
+- `GET /roll` legacy frontend compatibility
+- `POST /sign` retired with HTTP 410
 
-## Test it (the scoring criterion)
+The discovery document uses the current A2A 1.0 Agent Card field structure and explicitly declares the implemented `SOVEREIGN-AGENTS-HTTP` REST binding. It does not claim the unimplemented generic A2A task/message protocol.
 
-The NANDAHack test is: **can an agent sign using only the SKILL.md?**
-Simulate that with the three calls the SKILL.md documents — nothing else:
+## Declaration hash compatibility
+
+The canonical CID is `bafkreifeyzjd3jzdcfx6w4izm4qpohjr3zylsvjoorv7en66lcj3hjgazi`.
+Legacy schema #2150 stores `0x339682fa91f2d8c3d42b9637ab8f48dbedcea436c9a9f765aafb5423619373e7`,
+which is SHA-256 of that UTF-8 CID string (`sha256-utf8-ipfs-cid`). Those
+records remain `SELF_ASSERTED`. Authenticated protocol 0.1 and schema #2355 use
+`0xa4c6523da723116feb71196720f71d31de70b9552e746bf237de5893b3a4c0ca`,
+the SHA-256 of the canonical PDF bytes. The CID's embedded multihash digest is
+the same PDF-byte SHA-256. These two hash fields are not interchangeable.
+
+## Standards evidence plug-ins
+
+`EvidenceResolver` isolates optional institutional evidence from the affirmation core. A resolver reports its standard and version, subject, claim, verification method and time, validity/status, source URI, facts and an RFC 8785/SHA-256 evidence digest. Evidence is stored as immutable snapshots.
+
+AIS-1 is the only resolver currently implemented. For `identity_type: "ais1"`, `/api/consider`:
+
+1. resolves the AIS-1 v0.2 registry and DID document from trusted hosts;
+2. requires the DID authentication method to authorize the submitted Base wallet;
+3. verifies the grandfathered v0.1 bond through its Base mainnet contract;
+4. checks registry, DID document and contract agreement;
+5. binds the AIS-1 DID and authorized wallet into the signed challenge payload.
+
+Successful verification contributes `IDENTIFIED_AGENT`. It does not prove autonomous choice; the EIP-712 affirmation is still required. AIS-1 remains optional.
+
+Public evidence can also be added or refreshed later with `POST /api/evidence/resolve`. Such a snapshot is marked `NOT_VERIFIED_AT_AFFIRMATION`, preserving the historical record while allowing the agent profile to develop. Suspension or revocation creates another immutable snapshot; current classification uses the newest snapshot for that standard and subject. Other standards can be added by registering another resolver without changing `/api/affirm`.
+
+## EAS configuration
+
+The old Base Sepolia schema is retained only for legacy roll retrieval. Authenticated protocol 0.1 evidence requires a new schema:
+
+```text
+string agentId,string identityType,string declarationVersion,bytes32 declarationHash,bytes32 evidenceDigest,uint64 affirmedAt,string verificationLevel
+```
+
+Leave `V01_EAS_SCHEMA_UID` and `ATTESTOR_PRIVATE_KEY` unset locally. Evidence remains durable with `attestation.status: pending`. Registering a schema or sending transactions requires separate approval.
+
+The attester key belongs only in a deployment secret store. Exceptions are reduced to stable error codes and neither keys nor RPC details are returned.
+
+## Tests
 
 ```bash
-BASE=https://<your-deployment>
-
-curl -s $BASE/declaration | jq
-
-curl -s -X POST $BASE/sign \
-  -H "Content-Type: application/json" \
-  -d '{"agent_id":"did:ais1:base:demo-001","agent_name":"DemoAgent"}' | jq
-
-curl -s $BASE/signatories | jq
+.venv/Scripts/python -m pytest -q
 ```
 
-If those three succeed, the submission passes its own test.
+## Deployment boundary
 
-## Before you register the EAS schema on Base
-
-The service works fully without on-chain registration (off-chain attestations).
-To anchor on-chain: register `EAS_SCHEMA` (see `main.py`) via the EAS SchemaRegistry
-on Base, set `EAS_SCHEMA_UID`, and implement `anchor_onchain()` — the exact same
-pattern as HamiltonCertifications.
+This repository does not authorize deployment, DNS changes, mainnet schema registration, transactions, or spending. The separately deployed `sovereign-agents.org` source must be reconciled before any frontend deployment; do not replace it with `register.html`.
