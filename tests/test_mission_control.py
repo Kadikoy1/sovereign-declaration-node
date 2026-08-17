@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from mission_control.app import create_app
 from mission_control.migrate_state import migrate
+from mission_control.production import _seed_database
 from mission_control.store import MissionControlStore
 from mission_control.sync import AgentverseReadOnlyAdapter,qualify_agentverse,synchronize_colony
 
@@ -162,3 +163,21 @@ def test_state_migration_preserves_both_databases(tmp_path):
     report=migrate(source,destination)
     assert report["cohort_1_records"]==5 and report["mission_control_agents"]==5
     assert report["outreach.db"]["semantic_sha256"] and report["mission_control.db"]["integrity"]=="ok"
+
+
+def test_production_seed_is_hash_verified_and_never_overwrites(tmp_path,monkeypatch):
+    import base64,gzip,hashlib
+    target=tmp_path/"state.db"; payload=b"verified-state"
+    monkeypatch.setenv("SEED",base64.b64encode(gzip.compress(payload)).decode())
+    monkeypatch.setenv("DIGEST",hashlib.sha256(payload).hexdigest())
+    _seed_database(target,"SEED","DIGEST"); assert target.read_bytes()==payload
+    monkeypatch.setenv("SEED",base64.b64encode(gzip.compress(b"replacement")).decode())
+    _seed_database(target,"SEED","DIGEST"); assert target.read_bytes()==payload
+
+
+def test_production_seed_rejects_digest_mismatch(tmp_path,monkeypatch):
+    import base64,gzip
+    monkeypatch.setenv("SEED",base64.b64encode(gzip.compress(b"state")).decode())
+    monkeypatch.setenv("DIGEST","00"*32)
+    with pytest.raises(RuntimeError,match="digest mismatch"):
+        _seed_database(tmp_path/"state.db","SEED","DIGEST")
