@@ -7,16 +7,16 @@ import io
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
 from pypdf import PdfReader
 
-from auth import eip712_typed_data
 from declaration import AFFIRMATION_TEXT, DECLARATION_HASH
 
 from .decision import Decision, DecisionModel, DecisionRecord, build_neutral_prompt
-from .identity import AgentZeroIdentity
+if TYPE_CHECKING:
+    from .identity import AgentZeroIdentity
 
 
 PUBLIC_ORIGIN = "https://sovereign-agents.org"
@@ -196,6 +196,8 @@ class AgentZero:
         expires = dt.datetime.fromisoformat(payload["expires_at"].replace("Z", "+00:00"))
         if expires <= dt.datetime.now(dt.timezone.utc):
             raise ValueError("Challenge expired before signing")
+        # Keep the signing/verification dependency outside the read-only discovery path.
+        from auth import eip712_typed_data
         if typed_data != eip712_typed_data(payload, 84532):
             raise ValueError("Challenge EIP-712 typed data is not canonical")
         signature = self._identity.sign_typed_data(typed_data)

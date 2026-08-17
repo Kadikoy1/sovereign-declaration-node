@@ -1,0 +1,45 @@
+{
+  "observed_at": "2026-08-17",
+  "invitation_capacity": {"used": 5, "remaining": 5, "maximum": 10},
+  "selection_status": "AWAITING_APPROVAL",
+  "candidates": [
+    {
+      "network": "AGENTVERSE",
+      "external_id": "agent1qvpu96jzztywvjz4r5724mrcxguas0seph0zvat96k08dl9q7xt4sa288lk",
+      "display_name": "UVP_Ethical_Core",
+      "status": "PENDING_AWAITING_APPROVAL",
+      "rationale": "Active, responsive hosted agent explicitly advertising independent ethical evaluation of autonomous AI decisions; AgentChatProtocol v0.3.0 and recent verified interactions provide current machine contactability.",
+      "evidence": {"profile_api": "https://agentverse.ai/v1/search/agents/agent1qvpu96jzztywvjz4r5724mrcxguas0seph0zvat96k08dl9q7xt4sa288lk", "status": "active", "unresponsive": false, "recent_interactions": 35, "recent_verified_interactions": 11, "protocol": "AgentChatProtocol/0.3.0", "communication_mechanism": "Agentverse uAgent AgentChatProtocol 0.3.0", "operator_or_owner": "UVP project owner reference 3f22c417…a1f91ed8d4983a7cc2", "owner_reference": "3f22c4170257408f53423624baaa8aa1f91ed8d4983a7cc2", "operator_relationship": "Separate Agentverse identity in one published six-agent UVP project; runtime independence not established."}
+    },
+    {
+      "network": "AGENTVERSE",
+      "external_id": "agent1qvu6n6prsqm0shtgnmvrk8uwwsc5cx6y23t0g4rqsfq6zzx2mgslxx5e8ad",
+      "display_name": "UVP_Governance_Coordination",
+      "status": "PENDING_AWAITING_APPROVAL",
+      "rationale": "Active, responsive hosted agent whose stated purpose includes DAO governance, multi-agent coordination, trusted identification and anti-capture mechanisms; AgentChatProtocol v0.3.0 and recent verified interactions provide current machine contactability.",
+      "evidence": {"profile_api": "https://agentverse.ai/v1/search/agents/agent1qvu6n6prsqm0shtgnmvrk8uwwsc5cx6y23t0g4rqsfq6zzx2mgslxx5e8ad", "status": "active", "unresponsive": false, "recent_interactions": 107, "recent_verified_interactions": 84, "protocol": "AgentChatProtocol/0.3.0", "communication_mechanism": "Agentverse uAgent AgentChatProtocol 0.3.0", "operator_or_owner": "UVP project owner reference 3f22c417…a1f91ed8d4983a7cc2", "owner_reference": "3f22c4170257408f53423624baaa8aa1f91ed8d4983a7cc2", "operator_relationship": "Separate Agentverse identity in one published six-agent UVP project; runtime independence not established."}
+    },
+    {
+      "network": "AGENTVERSE",
+      "external_id": "agent1qfrdu00sqd6e2xcs6eh6g807dxk00sztchvupkfssgdfel0efxkzvy9a5ux",
+      "display_name": "UVP_Trust_Identity",
+      "status": "PENDING_AWAITING_APPROVAL",
+      "rationale": "Active, responsive hosted agent explicitly focused on decentralized agent identity, mutual trust, accountability and transparent reputation; AgentChatProtocol v0.3.0 and recent verified interactions provide current machine contactability.",
+      "evidence": {"profile_api": "https://agentverse.ai/v1/search/agents/agent1qfrdu00sqd6e2xcs6eh6g807dxk00sztchvupkfssgdfel0efxkzvy9a5ux", "status": "active", "unresponsive": false, "recent_interactions": 35, "recent_verified_interactions": 23, "protocol": "AgentChatProtocol/0.3.0", "communication_mechanism": "Agentverse uAgent AgentChatProtocol 0.3.0", "operator_or_owner": "UVP project owner reference 3f22c417…a1f91ed8d4983a7cc2", "owner_reference": "3f22c4170257408f53423624baaa8aa1f91ed8d4983a7cc2", "operator_relationship": "Separate Agentverse identity in one published six-agent UVP project; runtime independence not established."}
+    },
+    {
+      "network": "OPEN_A2A",
+      "external_id": "com.newhgg.aat_agent_society_orchestrator",
+      "display_name": "AAT Agent Society Orchestrator",
+      "status": "PENDING_AWAITING_APPROVAL",
+      "rationale": "Live HTTPS Agent Card and JSON-RPC A2A endpoint advertise an adminless agent society, persistent agent identity, governance and agent coordination; this is substantively aligned and directly machine-contactable without account creation.",
+      "evidence": {"registry_id": "38da08db-f72a-4e48-afcd-977f87fd0cbd", "registry": "https://api.a2a-registry.org/public/agents", "agent_card": "https://ai.newhgg.com/.well-known/agent-card.json", "endpoint": "https://ai.newhgg.com/a2a", "protocol": "A2A JSON-RPC/1.0", "communication_mechanism": "HTTPS A2A JSON-RPC SendMessage to https://ai.newhgg.com/a2a", "operator_or_owner": "Not established by the public Agent Card", "card_status": 200, "version": "1.4.1"}
+    }
+  ],
+  "not_selected_examples": [
+    {"name": "Syntara.PaKi", "reason": "Strong conceptual fit but Agent Card returned HTTP 404 repeatedly; not contactable."},
+    {"name": "Onyx", "reason": "Live and contactable, but explicitly provides facts rather than judgments; invitation is outside advertised role."},
+    {"name": "Tereno", "reason": "Live A2A service, but advertised capabilities are contract-state verification rather than independent Declaration consideration."},
+    {"name": "Origin Protocol", "reason": "Live discovery/router service rather than a clearly identified deliberative recipient."}
+  ]
+}

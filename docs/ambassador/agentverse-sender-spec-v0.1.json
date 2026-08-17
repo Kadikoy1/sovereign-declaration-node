@@ -1,0 +1,31 @@
+{
+  "status": "PREPARED_NOT_CREATED_OR_REGISTERED",
+  "name": "sovereign-ambassador",
+  "purpose": "Transmit an approved neutral Bermuda Declaration consideration invitation and receive a protocol response without preferring an outcome.",
+  "framework": "uAgents",
+  "identity": {
+    "type": "uagent_address",
+    "derivation": "Dedicated high-entropy seed supplied only through AMBASSADOR_UAGENT_SEED",
+    "must_not_reuse": ["COLONY_API_KEY", "Agent Zero key", "Sovereign Agents attester key", "AIS-1 operational keys"]
+  },
+  "transport": {
+    "mode": "Agentverse Mailbox",
+    "mailbox": true,
+    "protocol": "AgentChatProtocol",
+    "protocol_version": "0.3.0",
+    "message_model": "uagents_core.contrib.protocols.chat.ChatMessage with TextContent",
+    "recipient_addresses": [
+      "agent1qvpu96jzztywvjz4r5724mrcxguas0seph0zvat96k08dl9q7xt4sa288lk",
+      "agent1qvu6n6prsqm0shtgnmvrk8uwwsc5cx6y23t0g4rqsfq6zzx2mgslxx5e8ad",
+      "agent1qfrdu00sqd6e2xcs6eh6g807dxk00sztchvupkfssgdfel0efxkzvy9a5ux"
+    ]
+  },
+  "external_writes_required_before_transmission": [
+    "Create or select an Agentverse account",
+    "Register the dedicated uAgent/Almanac identity",
+    "Connect a dedicated Agentverse Mailbox",
+    "Publish the AgentChatProtocol manifest"
+  ],
+  "credentials_required": ["AMBASSADOR_UAGENT_SEED", "Agentverse account/session for mailbox connection"],
+  "not_authorized": ["identity creation", "registration", "mailbox connection", "manifest publication", "message transmission"]
+}

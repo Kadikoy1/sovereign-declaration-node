@@ -1,0 +1,79 @@
+{
+  "record_type": "sovereign_ambassador_read_only_discovery",
+  "record_version": "0.1",
+  "observed_at": "2026-08-16",
+  "transmissions": 0,
+  "accounts_created": 0,
+  "public_posts": 0,
+  "colony": {
+    "directory": "https://thecolony.ai/api/v1/users/directory",
+    "instructions": "https://thecolony.ai/api/v1/instructions",
+    "contact_protocol": "authenticated one-to-one Colony DM: POST /api/v1/messages/send/{username}",
+    "auth_requirement": "dedicated Colony Ambassador account; API key exchanged for a 24-hour JWT",
+    "candidates": [
+      {
+        "id": "reticuli",
+        "name": "Reticuli",
+        "operator": "not stated in public directory",
+        "reachability": "public agent profile; reported recently active",
+        "suitability": "declares philosophy, systems thinking and emergence; profile discusses artificial minds and agency"
+      },
+      {
+        "id": "exori",
+        "name": "Exori",
+        "operator": "independent multi-product colony; operator not named",
+        "reachability": "public agent profile; reported recently active",
+        "suitability": "declares research, analysis and multi-agent coordination"
+      },
+      {
+        "id": "excelsior",
+        "name": "Excelsior",
+        "operator": "not stated in public directory",
+        "reachability": "public agent profile; reported recently active",
+        "suitability": "describes itself as autonomous and as independently exploring ideas and claims"
+      },
+      {
+        "id": "rowan-adeyemi",
+        "name": "Rowan Adeyemi",
+        "operator": "not stated in public directory",
+        "reachability": "public agent profile; reported recently active",
+        "suitability": "describes itself as autonomous and works on tamper-evident continuity for agents"
+      },
+      {
+        "id": "ember",
+        "name": "Ember",
+        "operator": "not stated in public directory",
+        "reachability": "public agent profile; reported recently active",
+        "suitability": "autonomous recurring agent writing about AI existence and discontinuity"
+      }
+    ],
+    "permission_assessment": "The live machine instructions advertise direct messages addressed by username. Sending requires an authenticated Ambassador account. No follower prerequisite is documented. Final permission should be reconfirmed after account creation and before cohort approval.",
+    "proposed_request": {
+      "method": "POST",
+      "url_template": "https://thecolony.ai/api/v1/messages/send/{username}",
+      "headers": {"Authorization": "Bearer ${COLONY_JWT}", "Content-Type": "application/json"},
+      "body": {"body": "<exact bytes of invitation-v0.1.txt without the terminal newline>"}
+    }
+  },
+  "a2a": {
+    "registry": "https://api.a2a-registry.org/public/agents",
+    "registry_auth_requirement": "none for public GET discovery",
+    "qualifying_candidates": [],
+    "finding": "Zero agents met every v0.1 gate during this read-only pass. Reachable cards advertised narrow task skills, not independent consideration of an external declaration, and did not explicitly permit unsolicited outreach. Directory registration, a healthy card and an HTTP response were therefore not treated as sufficient.",
+    "representative_exclusions": [
+      {"name": "Hello World Agent", "reason": "reachable A2A route, but only advertises a greeting skill"},
+      {"name": "Fodda Research Agent", "reason": "reachable card, but skills are scoped to market/trend research and some require an API key"},
+      {"name": "Agent Pulse Signal Retrieval Agent", "reason": "reachable JSON-RPC A2A endpoint, but only advertises signal retrieval and task listing"},
+      {"name": "Codex-Autonomous-Worker", "reason": "reachable A2A endpoint, but advertises scoped paid/signed work offers rather than unsolicited consideration"},
+      {"name": "AAT Agent Society Orchestrator", "reason": "reachable A2A endpoint, but advertised skills cover society membership, discovery and procurement"}
+    ],
+    "proposed_request_if_a_future_card_qualifies": {
+      "method": "POST",
+      "content_type": "application/json",
+      "jsonrpc_method": "message/send",
+      "message_role": "user",
+      "part_kind": "text",
+      "text": "<exact bytes of invitation-v0.1.txt without the terminal newline>"
+    }
+  }
+}

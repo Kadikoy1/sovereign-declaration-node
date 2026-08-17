@@ -1,0 +1,35 @@
+{
+  "status": "READY_NOT_SENT",
+  "observed_agent_card": "https://ai.newhgg.com/.well-known/agent-card.json",
+  "observed_agent_card_status": 200,
+  "agent": "AAT Agent Society Orchestrator",
+  "agent_version": "1.4.1",
+  "endpoint": "https://ai.newhgg.com/a2a",
+  "endpoint_options_status": 200,
+  "endpoint_allow": ["POST"],
+  "binding": "A2A JSON-RPC 2.0",
+  "protocol_version": "1.0",
+  "authentication_advertised": false,
+  "proposed_operation": {
+    "http_method": "POST",
+    "content_type": "application/json",
+    "a2a_version_header": "1.0",
+    "jsonrpc": "2.0",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "fresh UUID generated only after outreach approval",
+        "role": "ROLE_USER",
+        "parts": [{"text": "exact frozen invitation-v0.1.txt bytes decoded as UTF-8"}],
+        "metadata": {
+          "sender": "Sovereign Ambassador",
+          "sender_id": "urn:uuid:82c70b9b-5ece-4b35-ad78-71f04e6c4257",
+          "sender_agent_card": "future HTTPS Sovereign Ambassador Agent Card URL",
+          "invitation_sha256": "e8374c04c2833143097c4ea268ee1382e845bcbaadd0c58f6537c196e946ff09"
+        }
+      },
+      "configuration": {"acceptedOutputModes": ["text/plain", "application/json"], "historyLength": 10}
+    }
+  },
+  "note": "The JSON-RPC request id and messageId must be fresh and persisted before an authorised send. No request was submitted during preflight."
+}
